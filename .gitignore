@@ -1,0 +1,28 @@
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Generated runtime data
+data/*.csv
+*.log
+logs/
+
+# Test / coverage artifacts (optional local tooling)
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,4 @@
+rppg
+opencv-python
+numpy
+scipy
