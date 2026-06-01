@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Heart Rate Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --header-h: 56px;
+            --gap: 12px;
+            --panel: #1a1a1a;
+            --panel-border: #2a2a2a;
+            --bg: #111;
+            --text: #e0e0e0;
+            --muted: #888;
+            --green: #2ecc71;
+            --amber: #f39c12;
+            --red: #e74c3c;
+        }
+
+        html,
+        body {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, sans-serif;
+        }
+
+        header {
+            height: var(--header-h);
+            padding: 0 20px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--panel-border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        header h1 {
+            font-size: 17px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        #ws-status {
+            font-size: 12px;
+            color: var(--muted);
+            margin-left: auto;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1.05fr 0.95fr;
+            gap: var(--gap);
+            padding: var(--gap);
+            height: calc(100vh - var(--header-h));
+            overflow: hidden;
+        }
+
+        .left,
+        .right {
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .video-wrap {
+            position: relative;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            flex: 1;
+            min-height: 0;
+            height: 100%;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            display: block;
+        }
+
+        .hr-badge {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+            padding: 8px 14px;
+            backdrop-filter: blur(4px);
+        }
+
+        .hr-badge .val {
+            font-size: clamp(28px, 3vw, 36px);
+            font-weight: 600;
+            color: var(--green);
+            line-height: 1;
+        }
+
+        .hr-badge .lbl {
+            font-size: 11px;
+            color: #aaa;
+            margin-top: 4px;
+        }
+
+        .sqi-badge {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+            padding: 7px 10px;
+            font-size: 12px;
+            color: var(--muted);
+            backdrop-filter: blur(4px);
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 8px;
+            flex-shrink: 0;
+        }
+
+        button {
+            flex: 1;
+            padding: 11px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+
+        #btn-start {
+            background: #1a7a3a;
+            color: #fff;
+        }
+
+        #btn-stop {
+            background: #7a1a1a;
+            color: #fff;
+        }
+
+        .status {
+            margin-top: 8px;
+            background: var(--panel);
+            border-radius: 10px;
+            padding: 9px 12px;
+            font-size: 13px;
+            color: #aaa;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #444;
+            flex-shrink: 0;
+        }
+
+        .dot.green {
+            background: var(--green);
+        }
+
+        .dot.amber {
+            background: var(--amber);
+        }
+
+        .dot.red {
+            background: var(--red);
+        }
+
+        .right {
+            gap: 10px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .stat {
+            background: var(--panel);
+            border-radius: 10px;
+            padding: 12px;
+            text-align: center;
+            min-width: 0;
+        }
+
+        .stat .val {
+            font-size: 22px;
+            font-weight: 600;
+            line-height: 1.1;
+        }
+
+        .stat .lbl {
+            font-size: 11px;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        .chart-card {
+            background: var(--panel);
+            border-radius: 12px;
+            padding: 12px 14px;
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chart-card h3 {
+            font-size: 11px;
+            font-weight: 500;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 8px;
+            flex-shrink: 0;
+        }
+
+        .chart-wrap {
+            position: relative;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .chart-wrap canvas {
+            width: 100% !important;
+            height: 100% !important;
+            display: block;
+        }
+
+        @media (max-width: 900px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+
+            html,
+            body {
+                overflow: auto;
+            }
+
+            .layout {
+                height: auto;
+                min-height: calc(100vh - var(--header-h));
+                overflow: visible;
+            }
+
+            .video-wrap {
+                aspect-ratio: 4 / 3;
+                flex: unset;
+            }
+
+            .chart-card {
+                min-height: 260px;
+            }
+        }
+
+        @media (max-width: 560px) {
+            header {
+                padding: 0 14px;
+            }
+
+            .layout {
+                padding: 10px;
+                gap: 10px;
+            }
+
+            .stats {
+                grid-template-columns: 1fr;
+            }
+
+            .controls {
+                flex-direction: column;
+            }
+
+            .hr-badge .val {
+                font-size: 28px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>rPPG Heart Rate Monitor</h1>
+        <span id="ws-status">disconnected</span>
+    </header>
+
+    <div class="layout">
+        <div class="left">
+            <div class="video-wrap">
+                <video id="video" autoplay muted playsinline></video>
+
+                <div class="hr-badge">
+                    <div class="val" id="hr-val">--</div>
+                    <div class="lbl">BPM</div>
+                </div>
+
+                <div class="sqi-badge" id="sqi-val">SQI: --</div>
+            </div>
+
+            <div class="controls">
+                <button id="btn-start">&#9654; Start</button>
+                <button id="btn-stop" disabled>&#9632; Stop</button>
+            </div>
+
+            <div class="status">
+                <div class="dot" id="dot"></div>
+                <span id="status-text">Press Start to begin</span>
+            </div>
+        </div>
+
+        <div class="right">
+            <div class="stats">
+                <div class="stat">
+                    <div class="val" id="s-hr" style="color:#2ecc71">--</div>
+                    <div class="lbl">Heart rate</div>
+                </div>
+                <div class="stat">
+                    <div class="val" id="s-sqi" style="color:#f39c12">--</div>
+                    <div class="lbl">Signal quality</div>
+                </div>
+                <div class="stat">
+                    <div class="val" id="s-frames" style="color:#888">0</div>
+                    <div class="lbl">Frames</div>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <h3>BVP signal</h3>
+                <div class="chart-wrap">
+                    <canvas id="bvp-chart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="capture" style="display:none"></canvas>
+
+    <script>
+        const WINDOW = 150;
+        const FPS = 15;
+
+        let ws = null;
+        let stream = null;
+        let timer = null;
+        let sending = false;
+
+        const bvpBuf = Array(WINDOW).fill(0);
+
+        const video = document.getElementById("video");
+        const capCanvas = document.getElementById("capture");
+
+        const hrVal = document.getElementById("hr-val");
+        const sqiVal = document.getElementById("sqi-val");
+        const sHr = document.getElementById("s-hr");
+        const sSqi = document.getElementById("s-sqi");
+        const sFrames = document.getElementById("s-frames");
+
+        const dot = document.getElementById("dot");
+        const statusText = document.getElementById("status-text");
+        const wsStatus = document.getElementById("ws-status");
+
+        const btnStart = document.getElementById("btn-start");
+        const btnStop = document.getElementById("btn-stop");
+
+        const bvpChart = new Chart(document.getElementById("bvp-chart"), {
+            type: "line",
+            data: {
+                labels: Array.from({ length: WINDOW }, (_, i) => i),
+                datasets: [{
+                    label: "BVP",
+                    data: [...bvpBuf],
+                    borderColor: "#00ccff",
+                    borderWidth: 1.5,
+                    fill: true,
+                    backgroundColor: "rgba(0,200,255,0.07)",
+                    tension: 0.4,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                animation: false,
+                maintainAspectRatio: false,
+                responsive: true,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    x: {
+                        display: false
+                    },
+                    y: {
+                        display: true,
+                        ticks: {
+                            color: "#555",
+                            font: { size: 10 }
+                        },
+                        grid: {
+                            color: "#222"
+                        }
+                    }
+                }
+            }
+        });
+
+        function setStatus(msg, color) {
+            statusText.textContent = msg;
+            dot.className = "dot" + (color ? " " + color : "");
+        }
+
+        function resetUI() {
+            hrVal.textContent = "--";
+            hrVal.style.color = "#2ecc71";
+
+            sqiVal.textContent = "SQI: --";
+            sqiVal.style.color = "#888";
+
+            sHr.textContent = "--";
+            sHr.style.color = "#2ecc71";
+
+            sSqi.textContent = "--";
+            sSqi.style.color = "#f39c12";
+
+            sFrames.textContent = "0";
+
+            bvpBuf.fill(0);
+            bvpChart.data.datasets[0].data = [...bvpBuf];
+            bvpChart.update("none");
+        }
+
+        function updateHR(hr, sqi) {
+            if (hr == null || sqi == null) return;
+
+            const color =
+                sqi >= 0.5 ? "#2ecc71" :
+                sqi >= 0.3 ? "#f39c12" :
+                             "#e74c3c";
+
+            const label =
+                sqi >= 0.5 ? "reliable" :
+                sqi >= 0.3 ? "low" :
+                             "poor";
+
+            hrVal.textContent = hr;
+            hrVal.style.color = color;
+
+            sqiVal.textContent = `SQI: ${sqi} (${label})`;
+            sqiVal.style.color = color;
+
+            sHr.textContent = hr;
+            sHr.style.color = color;
+
+            sSqi.textContent = sqi;
+            sSqi.style.color = color;
+        }
+
+        function stopCapture() {
+            if (timer) {
+                clearInterval(timer);
+                timer = null;
+            }
+            sending = false;
+        }
+
+        function stopAll() {
+            stopCapture();
+
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+
+            video.srcObject = null;
+
+            btnStart.disabled = false;
+            btnStop.disabled = true;
+        }
+
+        function startCapture() {
+            const ctx = capCanvas.getContext("2d");
+            capCanvas.width = 320;
+            capCanvas.height = 240;
+
+            timer = setInterval(() => {
+                if (sending) return;
+                if (!video.videoWidth || !video.videoHeight) return;
+                if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+                sending = true;
+
+                ctx.drawImage(video, 0, 0, 320, 240);
+                capCanvas.toBlob(
+                    blob => {
+                        try {
+                            if (blob && ws && ws.readyState === WebSocket.OPEN) {
+                                ws.send(blob);
+                            }
+                        } finally {
+                            sending = false;
+                        }
+                    },
+                    "image/jpeg",
+                    1
+                );
+            }, 1000 / FPS);
+        }
+
+        function connectWS() {
+            const proto = location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+            ws.onopen = () => {
+                wsStatus.textContent = "connected";
+                wsStatus.style.color = "#2ecc71";
+                setStatus("Warming up...", "amber");
+                startCapture();
+            };
+
+            ws.onclose = () => {
+                wsStatus.textContent = "disconnected";
+                wsStatus.style.color = "#e74c3c";
+                stopCapture();
+
+                if (btnStop.disabled === false) {
+                    setStatus("Disconnected", "red");
+                }
+            };
+
+            ws.onerror = () => {
+                setStatus("WebSocket error", "red");
+            };
+
+            ws.onmessage = (e) => {
+                const d = JSON.parse(e.data);
+
+                sFrames.textContent = d.frame || 0;
+
+                if (!d.ready) {
+                    const pct = Math.min(100, Math.round(((d.frame || 0) / 60) * 100));
+                    setStatus(`Warming up... ${pct}%`, "amber");
+                    return;
+                }
+
+                bvpBuf.shift();
+                bvpBuf.push(d.bvp ?? 0);
+                bvpChart.data.datasets[0].data = [...bvpBuf];
+                bvpChart.update("none");
+
+                if (d.hr != null && d.sqi != null) {
+                    updateHR(d.hr, d.sqi);
+                }
+
+                setStatus("Scanning - keep face in frame", "green");
+            };
+        }
+
+        btnStart.addEventListener("click", async () => {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "user" },
+                    audio: false
+                });
+
+                video.srcObject = stream;
+                await video.play();
+            } catch (err) {
+                console.error(err);
+                setStatus("Camera access denied", "red");
+                return;
+            }
+
+            btnStart.disabled = true;
+            btnStop.disabled = false;
+            resetUI();
+            setStatus("Connecting...", "amber");
+            connectWS();
+        });
+
+        btnStop.addEventListener("click", () => {
+            stopAll();
+            resetUI();
+            setStatus("Stopped", "");
+        });
+
+        window.addEventListener("resize", () => {
+            bvpChart.resize();
+        });
+
+        window.addEventListener("beforeunload", () => {
+            stopAll();
+        });
+    </script>
+</body>
+</html>
