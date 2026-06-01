@@ -1,4 +1,5 @@
-rppg
+open-rppg
 opencv-python
 numpy
 scipy
+mediapipe

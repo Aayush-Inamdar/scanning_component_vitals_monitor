@@ -1,4 +1,14 @@
-"""Camera capture loop and vitals measurement orchestration."""
+"""Camera capture loop and vitals measurement orchestration.
+
+Capture pipeline:
+  1. OpenCV reads raw frames from the camera
+  2. FaceMeshProcessor (MediaPipe) detects 468 landmarks and returns a
+     skin-only masked crop (forehead + cheeks, eyes/lips/hair excluded)
+  3. The masked crop is fed to open-rppg via model.update_face() —
+     bypassing open-rppg's own dumb bounding-box face detector entirely
+  4. open-rppg runs its neural network on the clean crop → BVP → HR/SQI
+  5. Every MEASUREMENT_INTERVAL_SEC seconds, vitals are computed and logged
+"""
 
 import time
 from datetime import datetime
@@ -22,13 +32,14 @@ from config.settings import (
 from models.vitals_record import VitalsRecord
 from services.bp_estimator import estimate_bp
 from services.cardiac import cardiac_load
+from services.face_mesh_processor import FaceMeshProcessor
 from services.logger import init_csv, log_to_csv
 
 
 class VitalsMonitor:
     """
-    Runs the rPPG camera preview loop, samples vitals on an interval,
-    and logs results to CSV.
+    Runs the rPPG camera loop with MediaPipe-based skin ROI preprocessing,
+    samples vitals on an interval, and logs results to CSV.
     """
 
     def __init__(
@@ -37,12 +48,6 @@ class VitalsMonitor:
         camera_index: int = CAMERA_INDEX,
         model: Optional[Any] = None,
     ) -> None:
-        """
-        Args:
-            csv_path: Path to the vitals CSV log file.
-            camera_index: OpenCV camera device index.
-            model: Optional pre-constructed rppg.Model instance (for testing).
-        """
         self._csv_path = csv_path
         self._camera_index = camera_index
         init_csv(self._csv_path)
@@ -52,39 +57,74 @@ class VitalsMonitor:
         """Start camera capture and process frames until the user quits."""
         print("Model loaded. Starting camera...")
 
-        with self._model.video_capture(self._camera_index):
-            print("Camera open. Reading vitals every 5 seconds...\n")
-            last_measurement = 0.0
+        cap = cv2.VideoCapture(self._camera_index)
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open camera index {self._camera_index}")
 
-            for frame, box in self._model.preview:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        print("Camera open. Reading vitals every 5 seconds...\n")
+        last_measurement = 0.0
 
-                if time.time() - last_measurement > MEASUREMENT_INTERVAL_SEC:
-                    self._process_measurement()
-                    last_measurement = time.time()
+        with self._model, FaceMeshProcessor() as mesh:
+            try:
+                while self._model.alive or True:
+                    ret, frame_bgr = cap.read()
+                    if not ret:
+                        break
 
-                if box is not None:
-                    y1, y2 = box[0]
-                    x1, x2 = box[1]
-                    cv2.rectangle(
-                        frame,
-                        (x1, y1),
-                        (x2, y2),
-                        FACE_BOX_COLOR_BGR,
-                        FACE_BOX_THICKNESS,
+                    ts = time.time()
+
+                    # --- MediaPipe: get skin-only masked crop ----------
+                    masked_frame, roi_mask, face_found = mesh.process(frame_bgr)
+
+                    if face_found:
+                        # Feed the clean masked frame to open-rppg.
+                        # update_face expects RGB.
+                        face_rgb = cv2.cvtColor(masked_frame, cv2.COLOR_BGR2RGB)
+                        self._model.update_face(face_rgb, ts=ts, hasface=True)
+                    else:
+                        # Tell open-rppg no face this frame so it doesn't
+                        # stall waiting for input.
+                        self._model.update_face(None, ts=ts, hasface=False)
+
+                    # --- Periodic vitals measurement -------------------
+                    if ts - last_measurement > MEASUREMENT_INTERVAL_SEC:
+                        self._process_measurement()
+                        last_measurement = ts
+
+                    # --- Display: draw ROI contour on original frame ---
+                    display = mesh.draw_landmarks(frame_bgr, roi_mask)
+                    status = "Face found" if face_found else "No face"
+                    cv2.putText(
+                        display,
+                        status,
+                        (10, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        FACE_BOX_COLOR_BGR if face_found else (0, 0, 200),
+                        2,
                     )
+                    cv2.imshow(WINDOW_TITLE, display)
 
-                cv2.imshow(WINDOW_TITLE, frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    self._model.alive = False
-                    break
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+
+            finally:
+                self._model.alive = False
+                cap.release()
 
     def _process_measurement(self) -> None:
         """Sample HR/HRV/BVP, estimate BP, log and print vitals if SQI is sufficient."""
         result = self._model.hr(start=HR_WINDOW_START)
 
-        if not result or not result.get("hr") or result.get("SQI", 0) <= SQI_THRESHOLD:
+        if not result or not result.get("hr"):
             print("Waiting for signal... (stay still, face the light)")
+            return
+
+        sqi_val = round(float(result.get("SQI") or 0), 3)
+
+        if sqi_val <= SQI_THRESHOLD:
+            sqi_label = "good" if sqi_val >= 0.5 else "low" if sqi_val >= 0.3 else "poor"
+            print(f"Signal too weak — SQI={sqi_val} ({sqi_label}). Stay still, face the light.")
             return
 
         hr = result["hr"]
@@ -108,9 +148,8 @@ class VitalsMonitor:
             dbp_mmhg=dbp,
             hrv_rmssd_ms=rmssd_disp,
             cardiac_load_rpp=load,
-            sqi=round(result.get("SQI", 0), 3),
+            sqi=sqi_val,
         )
-        sqi_val = round(result.get("SQI", 0), 3)
         log_to_csv(record, self._csv_path)
         self._print_vitals(hr, breathing, sbp, dbp, rmssd_disp, load, sqi_val)
 
