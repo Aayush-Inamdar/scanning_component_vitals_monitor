@@ -50,8 +50,17 @@ def estimate_bp(
 
     sig = np.array(bvp_signal, dtype=float)
 
-    peaks, _ = find_peaks(sig, distance=BP_PEAK_DISTANCE, prominence=BP_PEAK_PROMINENCE)
-    troughs, _ = find_peaks(-sig, distance=BP_PEAK_DISTANCE, prominence=BP_PEAK_PROMINENCE)
+    # Normalise to zero mean so peak/trough detection is scale-independent
+    sig = sig - float(np.mean(sig))
+
+    # Adapt prominence to the actual signal scale (10% of peak-to-peak range)
+    sig_range = float(np.max(sig) - np.min(sig))
+    if sig_range < 1e-6:
+        return None, None
+    adaptive_prominence = max(BP_PEAK_PROMINENCE * sig_range, 1e-6)
+
+    peaks, _ = find_peaks(sig, distance=BP_PEAK_DISTANCE, prominence=adaptive_prominence)
+    troughs, _ = find_peaks(-sig, distance=BP_PEAK_DISTANCE, prominence=adaptive_prominence)
 
     if len(peaks) < 2 or len(troughs) < 2:
         return None, None
@@ -67,8 +76,11 @@ def estimate_bp(
 
     mean_amp = float(np.mean(amplitudes))
 
+    # mean_amp is now in normalised units (relative to sig_range).
+    # A healthy BVP should have peak-to-trough ~60-80% of the full range,
+    # so we anchor BP_REF_AMP at 0.7 of the normalised scale.
     hr_factor = 1 + BP_HR_FACTOR_COEFF * (hr - BP_REF_HR)
-    amp_factor = mean_amp / BP_REF_AMP
+    amp_factor = mean_amp / (BP_REF_AMP * sig_range)
 
     pp = BP_REF_PP * amp_factor * hr_factor
     map_ = BP_REF_MAP * hr_factor

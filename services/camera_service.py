@@ -110,8 +110,9 @@ class VitalsMonitor:
             cardiac_load_rpp=load,
             sqi=round(result.get("SQI", 0), 3),
         )
+        sqi_val = round(result.get("SQI", 0), 3)
         log_to_csv(record, self._csv_path)
-        self._print_vitals(hr, breathing, sbp, dbp, rmssd_disp, load)
+        self._print_vitals(hr, breathing, sbp, dbp, rmssd_disp, load, sqi_val)
 
     def _print_vitals(
         self,
@@ -121,9 +122,12 @@ class VitalsMonitor:
         dbp: Optional[float],
         rmssd_disp: Optional[float],
         load: Optional[float],
+        sqi: float,
     ) -> None:
         """Print a formatted vitals summary to stdout."""
+        sqi_label = "good" if sqi >= 0.5 else "low" if sqi >= 0.3 else "poor"
         print(PRINT_SEPARATOR)
+        print(f"  SQI            : {sqi} ({sqi_label})")
         print(f"  Heart Rate     : {hr:.1f} BPM")
         print(f"  Breathing Rate : {breathing} breaths/min")
         print(f"  BP (estimated) : {sbp}/{dbp} mmHg")
