@@ -36,7 +36,7 @@ def _ensure_model(model_path: Path = _DEFAULT_MODEL_PATH) -> Path:
     if model_path.exists() and model_path.stat().st_size > 1_000_000:
         return model_path
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[FaceMesh] Downloading face landmarker model → {model_path}")
+    print(f"[FaceMesh] Downloading face landmarker model -> {model_path}")
     try:
         urllib.request.urlretrieve(MODEL_URL, model_path)
         print(f"[FaceMesh] Model downloaded ({model_path.stat().st_size // 1024} KB)")

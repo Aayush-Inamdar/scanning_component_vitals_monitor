@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vitals Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --header-h: 56px;
+            --gap: 12px;
+            --panel: #1a1a1a;
+            --panel-border: #2a2a2a;
+            --bg: #111;
+            --text: #e0e0e0;
+            --muted: #888;
+            --green: #2ecc71;
+            --amber: #f39c12;
+            --red: #e74c3c;
+            --blue: #3498db;
+            --purple: #9b59b6;
+            --teal: #1abc9c;
+            --orange: #e67e22;
+        }
+
+        html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
+
+        header {
+            height: var(--header-h);
+            padding: 0 20px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--panel-border);
+            display: flex; align-items: center; gap: 12px;
+        }
+        header h1 { font-size: 17px; font-weight: 500; }
+        #ws-status { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1.05fr 0.95fr;
+            gap: var(--gap);
+            padding: var(--gap);
+            height: calc(100vh - var(--header-h));
+            overflow: hidden;
+        }
+
+        .left, .right { min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+
+        /* ── Video ── */
+        .video-wrap {
+            position: relative;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            flex: 1; min-height: 0;
+        }
+        video {
+            width: 100%; height: 100%;
+            object-fit: contain;
+            transform: scaleX(-1);
+            display: block;
+        }
+        /* mesh canvas overlaid exactly on video */
+        #mesh-canvas {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+        }
+
+        /* live badges on video */
+        .badge {
+            position: absolute;
+            background: rgba(0,0,0,0.72);
+            border-radius: 10px;
+            padding: 7px 12px;
+            backdrop-filter: blur(4px);
+            font-size: 12px;
+            color: #aaa;
+        }
+        .badge .val { font-size: clamp(22px,2.5vw,30px); font-weight: 600; line-height: 1; }
+        .badge .lbl { font-size: 10px; margin-top: 3px; }
+        #badge-hr  { bottom: 12px; left: 12px; }
+        #badge-bp  { bottom: 12px; left: 50%; transform: translateX(-50%); }
+        #badge-sqi { bottom: 12px; right: 12px; }
+
+        /* ── Progress bar ── */
+        .progress-wrap {
+            flex-shrink: 0;
+            background: var(--panel);
+            border-radius: 10px;
+            padding: 10px 14px;
+        }
+        .progress-row {
+            display: flex; justify-content: space-between;
+            font-size: 12px; color: var(--muted); margin-bottom: 6px;
+        }
+        .progress-row #prog-label { font-weight: 500; color: var(--text); }
+        .progress-bar-bg {
+            background: #2a2a2a;
+            border-radius: 6px; height: 8px; overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%; border-radius: 6px;
+            background: linear-gradient(90deg, #2ecc71, #1abc9c);
+            transition: width 0.4s ease;
+            width: 0%;
+        }
+
+        /* ── Controls + status ── */
+        .controls { display: flex; gap: 10px; flex-shrink: 0; }
+        button {
+            flex: 1; padding: 11px; border: none; border-radius: 10px;
+            font-size: 14px; font-weight: 500; cursor: pointer;
+        }
+        button:disabled { opacity: 0.4; cursor: default; }
+        #btn-start { background: #1a7a3a; color: #fff; }
+        #btn-stop  { background: #7a1a1a; color: #fff; }
+
+        .status {
+            background: var(--panel); border-radius: 10px;
+            padding: 9px 12px; font-size: 13px; color: #aaa;
+            display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+        }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #444; flex-shrink: 0; }
+        .dot.green  { background: var(--green); }
+        .dot.amber  { background: var(--amber); }
+        .dot.red    { background: var(--red); }
+
+        /* ── Right panel ── */
+        /* SCANNING view: only waveform */
+        #scan-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+        .chart-card {
+            background: var(--panel); border-radius: 12px;
+            padding: 12px 14px; flex: 1; min-height: 0;
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .chart-card h3 {
+            font-size: 11px; font-weight: 500; color: #666;
+            text-transform: uppercase; letter-spacing: 0.05em;
+            margin-bottom: 8px; flex-shrink: 0;
+        }
+        .chart-wrap { position: relative; flex: 1; min-height: 0; }
+        .chart-wrap canvas { width: 100% !important; height: 100% !important; display: block; }
+
+        /* RESULTS view */
+        #results-panel { display: none; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+
+        .results-title {
+            font-size: 13px; font-weight: 600; color: var(--green);
+            text-align: center; padding: 4px 0; flex-shrink: 0;
+        }
+
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .result-card {
+            background: var(--panel);
+            border-radius: 10px;
+            padding: 14px 10px;
+            text-align: center;
+            border: 1px solid var(--panel-border);
+        }
+        .result-card .val { font-size: 24px; font-weight: 700; line-height: 1.1; }
+        .result-card .lbl { font-size: 10px; color: #666; margin-top: 4px; }
+        .result-card .sub { font-size: 10px; color: #555; margin-top: 2px; }
+
+        /* results waveform smaller */
+        #results-panel .chart-card { flex: 1; }
+
+        /* scan again button */
+        #btn-scan-again {
+            background: #1a4a7a; color: #fff;
+            border-radius: 10px; padding: 10px;
+            border: none; cursor: pointer; font-size: 14px; font-weight: 500;
+            flex-shrink: 0;
+        }
+
+        @media (max-width: 900px) {
+            .layout { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - var(--header-h)); overflow: visible; }
+            html, body { overflow: auto; }
+            .video-wrap { aspect-ratio: 4/3; flex: unset; }
+            .chart-card { min-height: 200px; }
+            .results-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 560px) {
+            header { padding: 0 14px; }
+            .layout { padding: 10px; gap: 10px; }
+            .controls { flex-direction: column; }
+            .results-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Vitals Monitor</h1>
+    <span id="ws-status">disconnected</span>
+</header>
+
+<div class="layout">
+    <!-- LEFT: camera -->
+    <div class="left">
+        <div class="video-wrap">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="mesh-canvas"></canvas>
+
+            <div class="badge" id="badge-hr">
+                <div class="val" id="live-hr">--</div>
+                <div class="lbl">BPM</div>
+            </div>
+            <div class="badge" id="badge-bp">
+                <div class="val" id="live-bp">--</div>
+                <div class="lbl">BP mmHg</div>
+            </div>
+            <div class="badge" id="badge-sqi">
+                <div class="val" id="live-sqi">--</div>
+                <div class="lbl">SQI</div>
+            </div>
+        </div>
+
+        <!-- Progress bar -->
+        <div class="progress-wrap">
+            <div class="progress-row">
+                <span id="prog-label">Ready</span>
+                <span id="prog-time"></span>
+            </div>
+            <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="prog-bar"></div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="btn-start">&#9654; Start Scan</button>
+            <button id="btn-stop" disabled>&#9632; Stop</button>
+        </div>
+
+        <div class="status">
+            <div class="dot" id="dot"></div>
+            <span id="status-text">Press Start Scan to begin</span>
+        </div>
+    </div>
+
+    <!-- RIGHT: scan panel (waveform only during scan) -->
+    <div class="right">
+
+        <div id="scan-panel">
+            <div class="chart-card">
+                <h3>Pulse Waveform (BVP)</h3>
+                <div class="chart-wrap">
+                    <canvas id="bvp-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div id="results-panel">
+            <div class="results-title">✓ Scan Complete</div>
+
+            <div class="results-grid">
+                <div class="result-card">
+                    <div class="val" id="r-hr" style="color:var(--green)">--</div>
+                    <div class="lbl">Heart Rate</div>
+                    <div class="sub">BPM</div>
+                </div>
+                <div class="result-card">
+                    <div class="val" id="r-bp" style="color:var(--purple)">--</div>
+                    <div class="lbl">Blood Pressure</div>
+                    <div class="sub">mmHg</div>
+                </div>
+                <div class="result-card">
+                    <div class="val" id="r-sqi" style="color:var(--amber)">--</div>
+                    <div class="lbl">Signal Quality</div>
+                    <div class="sub">SQI 0–1</div>
+                </div>
+                <div class="result-card">
+                    <div class="val" id="r-hrv" style="color:var(--blue)">--</div>
+                    <div class="lbl">HRV RMSSD</div>
+                    <div class="sub">ms</div>
+                </div>
+                <div class="result-card">
+                    <div class="val" id="r-br" style="color:var(--teal)">--</div>
+                    <div class="lbl">Breathing Rate</div>
+                    <div class="sub">breaths/min</div>
+                </div>
+                <div class="result-card">
+                    <div class="val" id="r-load" style="color:var(--orange)">--</div>
+                    <div class="lbl">Cardiac Load</div>
+                    <div class="sub">RPP ×10³</div>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <h3>Pulse Waveform (BVP)</h3>
+                <div class="chart-wrap">
+                    <canvas id="bvp-chart-results"></canvas>
+                </div>
+            </div>
+
+            <button id="btn-scan-again">↺ Scan Again</button>
+        </div>
+
+    </div>
+</div>
+
+<canvas id="capture" style="display:none"></canvas>
+
+<script>
+// ─── Constants ───────────────────────────────────────────────────────────────
+const WINDOW = 150;
+const FPS    = 15;
+const SCAN_DURATION = 30;
+
+// ─── State ───────────────────────────────────────────────────────────────────
+let ws             = null;
+let stream         = null;
+let timer          = null;
+let sending        = false;
+let phase          = "idle";
+let meshFrameCount = 0;
+
+const bvpBuf = Array(WINDOW).fill(0);
+
+// ─── Elements ────────────────────────────────────────────────────────────────
+const video       = document.getElementById("video");
+const meshCanvas  = document.getElementById("mesh-canvas");
+const capCanvas   = document.getElementById("capture");
+const btnStart    = document.getElementById("btn-start");
+const btnStop     = document.getElementById("btn-stop");
+const btnScanAgain= document.getElementById("btn-scan-again");
+const dot         = document.getElementById("dot");
+const statusText  = document.getElementById("status-text");
+const wsStatus    = document.getElementById("ws-status");
+const progBar     = document.getElementById("prog-bar");
+const progLabel   = document.getElementById("prog-label");
+const progTime    = document.getElementById("prog-time");
+const scanPanel   = document.getElementById("scan-panel");
+const resultsPanel= document.getElementById("results-panel");
+const liveHr      = document.getElementById("live-hr");
+const liveBp      = document.getElementById("live-bp");
+const liveSqi     = document.getElementById("live-sqi");
+
+// ─── BVP Chart (scan view) ───────────────────────────────────────────────────
+const bvpChart = new Chart(document.getElementById("bvp-chart"), {
+    type: "line",
+    data: {
+        labels: Array.from({ length: WINDOW }, (_, i) => i),
+        datasets: [{
+            data: [...bvpBuf],
+            borderColor: "#00ccff",
+            borderWidth: 1.5,
+            fill: true,
+            backgroundColor: "rgba(0,200,255,0.07)",
+            tension: 0.4,
+            pointRadius: 0,
+        }],
+    },
+    options: {
+        animation: false,
+        maintainAspectRatio: false,
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { display: false },
+            y: { display: true, ticks: { color: "#555", font: { size: 10 } }, grid: { color: "#222" } },
+        },
+    },
+});
+
+// ─── BVP Chart (results view) ────────────────────────────────────────────────
+const bvpChartResults = new Chart(document.getElementById("bvp-chart-results"), {
+    type: "line",
+    data: {
+        labels: Array.from({ length: WINDOW }, (_, i) => i),
+        datasets: [{
+            data: [...bvpBuf],
+            borderColor: "#2ecc71",
+            borderWidth: 1.5,
+            fill: true,
+            backgroundColor: "rgba(46,204,113,0.07)",
+            tension: 0.4,
+            pointRadius: 0,
+        }],
+    },
+    options: {
+        animation: false,
+        maintainAspectRatio: false,
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { display: false },
+            y: { display: true, ticks: { color: "#555", font: { size: 10 } }, grid: { color: "#222" } },
+        },
+    },
+});
+
+// ─── MediaPipe Face Mesh (browser-side, for overlay only) ────────────────────
+let mpFaceMesh = null;
+let meshCtx    = null;
+
+function initMeshOverlay() {
+    meshCtx = meshCanvas.getContext("2d");
+
+    mpFaceMesh = new FaceMesh({ locateFile: f =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}` });
+
+    mpFaceMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+    });
+
+    mpFaceMesh.onResults(results => {
+        if (!meshCtx) return;
+        const dpr = window.devicePixelRatio || 1;
+        const cw = meshCanvas.offsetWidth;
+        const ch = meshCanvas.offsetHeight;
+
+        if (
+            meshCanvas.width !== Math.round(cw * dpr) ||
+            meshCanvas.height !== Math.round(ch * dpr)
+        ) {
+            meshCanvas.width = Math.round(cw * dpr);
+            meshCanvas.height = Math.round(ch * dpr);
+
+            meshCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+        meshCtx.clearRect(0, 0, meshCanvas.width, meshCanvas.height);
+
+        if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) return;
+        if (phase !== "scanning" && phase !== "preparing") return;
+
+        for (const landmarks of results.multiFaceLandmarks) {
+            const W = meshCanvas.offsetWidth;
+            const H = meshCanvas.offsetHeight;
+            meshCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            
+            const mirrored = landmarks.map(lm => ({
+                x: 1 - lm.x,
+                y: lm.y,
+                z: lm.z
+            }));
+
+            console.log(
+                "nose",
+                mirrored[1].x.toFixed(2),
+                mirrored[1].y.toFixed(2)
+            );
+
+        /*    drawConnectors(meshCtx, mirrored, FACEMESH_FACE_OVAL,
+                { color: "rgba(0,255,180,0.7)", lineWidth: 1.5 });
+
+            drawConnectors(meshCtx, mirrored, FACEMESH_TESSELATION,
+                { color: "rgba(0,255,180,0.12)", lineWidth: 0.5 });
+
+            //Eyes
+            const eyeColor = "rgba(0,200,255,0.8)";
+            drawConnectors(meshCtx, mirrored, FACEMESH_RIGHT_EYE,
+                { color: eyeColor, lineWidth: 1.2 });
+            drawConnectors(meshCtx, mirrored, FACEMESH_LEFT_EYE,
+                { color: eyeColor, lineWidth: 1.2 });
+        */
+            for (const lm of mirrored) {
+                const x = lm.x * W;
+                const y = lm.y * H;
+                meshCtx.beginPath();
+                meshCtx.arc(x, y, 1.2, 0, 2 * Math.PI);
+                meshCtx.fillStyle = "rgba(0,255,180,0.45)";
+                meshCtx.fill();
+            }
+        }
+    });
+}
+
+function runMeshOnFrame() {
+    if (!mpFaceMesh || !video.videoWidth) return;
+    mpFaceMesh.send({ image: video }).catch(() => {});
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function setStatus(msg, color) {
+    statusText.textContent = msg;
+    dot.className = "dot" + (color ? " " + color : "");
+}
+
+function sqiColor(sqi) {
+    return sqi >= 0.5 ? "#2ecc71" : sqi >= 0.3 ? "#f39c12" : "#e74c3c";
+}
+function sqiLabel(sqi) {
+    return sqi >= 0.5 ? "reliable" : sqi >= 0.3 ? "low" : "poor";
+}
+
+function pushBvp(val) {
+    bvpBuf.shift();
+    bvpBuf.push(val);
+    bvpChart.data.datasets[0].data = [...bvpBuf];
+    bvpChart.update("none");
+    bvpChartResults.data.datasets[0].data = [...bvpBuf];
+    bvpChartResults.update("none");
+}
+
+function showScanView() {
+    scanPanel.style.display    = "flex";
+    resultsPanel.style.display = "none";
+}
+
+function showResultsView(d) {
+    scanPanel.style.display    = "none";
+    resultsPanel.style.display = "flex";
+
+    document.getElementById("r-hr").textContent   = d.hr   ?? "--";
+    document.getElementById("r-sqi").textContent  = d.sqi  ?? "--";
+    document.getElementById("r-hrv").textContent  = d.rmssd     ?? "--";
+    document.getElementById("r-br").textContent   = d.breathing ?? "--";
+    document.getElementById("r-load").textContent = d.load      ?? "--";
+
+    if (d.sbp != null && d.dbp != null) {
+        document.getElementById("r-bp").textContent = `${d.sbp}/${d.dbp}`;
+    } else {
+        document.getElementById("r-bp").textContent = "--";
+    }
+
+    if (d.sqi != null) {
+        document.getElementById("r-sqi").style.color = sqiColor(d.sqi);
+    }
+}
+
+function resetLiveBadges() {
+    liveHr.textContent  = "--";
+    liveBp.textContent  = "--";
+    liveSqi.textContent = "--";
+    liveHr.style.color  = "#2ecc71";
+    liveSqi.style.color = "#888";
+}
+
+function updateLiveBadges(d) {
+    if (d.hr  != null) { liveHr.textContent  = d.hr;  liveHr.style.color  = sqiColor(d.sqi ?? 0); }
+    if (d.sqi != null) { liveSqi.textContent = d.sqi; liveSqi.style.color = sqiColor(d.sqi); }
+    if (d.sbp != null && d.dbp != null) liveBp.textContent = `${d.sbp}/${d.dbp}`;
+}
+
+// ─── WebSocket / capture ─────────────────────────────────────────────────────
+function startCapture() {
+    const ctx = capCanvas.getContext("2d");
+    capCanvas.width  = 640;
+    capCanvas.height = 480;
+
+    timer = setInterval(() => {
+        if (sending) return;
+        if (!video.videoWidth || !video.videoHeight) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        sending = true;
+        if (++meshFrameCount % 2 === 0) runMeshOnFrame();
+
+        ctx.drawImage(video, 0, 0, 640, 480);
+        capCanvas.toBlob(blob => {
+            try {
+                if (blob && ws && ws.readyState === WebSocket.OPEN) ws.send(blob);
+            } finally {
+                sending = false;
+            }
+        }, "image/jpeg", 1);
+    }, 1000 / FPS);
+}
+
+function stopCapture() {
+    if (timer) { clearInterval(timer); timer = null; }
+    sending = false;
+}
+
+function stopAll() {
+    stopCapture();
+    if (ws)     { ws.close(); ws = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    video.srcObject = null;
+    btnStart.disabled = false;
+    btnStop.disabled  = true;
+}
+
+function connectWS() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+    ws.onopen = () => {
+        wsStatus.textContent  = "connected";
+        wsStatus.style.color  = "#2ecc71";
+        phase = "preparing";
+        setStatus("Preparing for face scan...", "amber");
+        startCapture();
+    };
+
+    ws.onclose = () => {
+        wsStatus.textContent = "disconnected";
+        wsStatus.style.color = "#e74c3c";
+        stopCapture();
+        if (!btnStop.disabled) setStatus("Disconnected", "red");
+    };
+
+    ws.onerror = () => setStatus("WebSocket error", "red");
+
+    ws.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+
+        // ── Always update BVP ──────────────────────────────────────
+        if (d.bvp != null) pushBvp(d.bvp);
+
+        // ── Phase transitions ─────────────────────────────────────
+        if (d.phase === "preparing") {
+            phase = "preparing";
+            progLabel.textContent = "Preparing for face scan...";
+            progBar.style.width   = "0%";
+            progTime.textContent  = "";
+            if (!d.face) {
+                setStatus("Preparing for face scan — stay still", "amber");
+            } else {
+                setStatus("Face detected — starting scan...", "amber");
+            }
+        }
+
+        else if (d.phase === "scanning") {
+            if (phase !== "scanning") {
+                phase = "scanning";
+                showScanView();
+            }
+
+            const pct = d.progress ?? 0;
+            const rem = d.remaining ?? 0;
+            progBar.style.width   = `${pct}%`;
+            progLabel.textContent = `Scanning... ${pct}%`;
+            progTime.textContent  = `${rem}s remaining`;
+            setStatus("Scanning — keep still, face the light", "green");
+
+            updateLiveBadges(d);
+        }
+
+        else if (d.phase === "complete") {
+            if (phase !== "complete") {
+                phase = "complete";
+                progBar.style.width   = "100%";
+                progLabel.textContent = "Scan complete";
+                progTime.textContent  = "";
+                setStatus("Scan complete ✓", "green");
+                showResultsView(d);
+                // clear mesh overlay
+                if (meshCtx) meshCtx.clearRect(0, 0, meshCanvas.width, meshCanvas.height);
+            }
+        }
+    };
+}
+
+// ─── Button handlers ─────────────────────────────────────────────────────────
+btnStart.addEventListener("click", async () => {
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+        });
+        video.srcObject = stream;
+        await video.play();
+    } catch (err) {
+        console.error(err);
+        setStatus("Camera access denied", "red");
+        return;
+    }
+
+    btnStart.disabled = true;
+    btnStop.disabled  = false;
+    bvpBuf.fill(0);
+    bvpChart.data.datasets[0].data = [...bvpBuf];
+    bvpChart.update("none");
+    showScanView();
+    progBar.style.width   = "0%";
+    progLabel.textContent = "Starting...";
+    progTime.textContent  = "";
+    setStatus("Connecting...", "amber");
+    initMeshOverlay();
+    connectWS();
+});
+
+btnStop.addEventListener("click", () => {
+    stopAll();
+    phase = "idle";
+    showScanView();
+    resetLiveBadges();
+    progBar.style.width   = "0%";
+    progLabel.textContent = "Ready";
+    progTime.textContent  = "";
+    if (meshCtx) meshCtx.clearRect(0, 0, meshCanvas.width, meshCanvas.height);
+    setStatus("Stopped", "");
+});
+
+btnScanAgain.addEventListener("click", async () => {
+    // stop existing connection cleanly, then restart
+    stopAll();
+    phase = "idle";
+    showScanView();
+    resetLiveBadges();
+    progBar.style.width   = "0%";
+    progLabel.textContent = "Starting...";
+    progTime.textContent  = "";
+
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+        });
+        video.srcObject = stream;
+        await video.play();
+    } catch (err) {
+        setStatus("Camera access denied", "red");
+        return;
+    }
+
+    btnStart.disabled = true;
+    btnStop.disabled  = false;
+    initMeshOverlay();
+    connectWS();
+});
+
+window.addEventListener("resize", () => {
+    bvpChart.resize();
+    bvpChartResults.resize();
+});
+
+window.addEventListener("beforeunload", stopAll);
+</script>
+</body>
+</html>

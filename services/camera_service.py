@@ -51,7 +51,7 @@ class VitalsMonitor:
         self._csv_path = csv_path
         self._camera_index = camera_index
         init_csv(self._csv_path)
-        self._model = model if model is not None else rppg.Model()
+        self._model = model if model is not None else rppg.Model("ME-flow.rlap")
 
     def run(self) -> None:
         """Start camera capture and process frames until the user quits."""
