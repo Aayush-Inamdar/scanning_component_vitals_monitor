@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Clinical Vitals Engine</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    
+    <style>
+        body { 
+            background: #000000; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center; 
+            min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box;
+        }
+        
+        .header { text-align: center; margin-bottom: 15px; width: 100%; }
+        .header h1 { margin: 0 0 5px 0; font-size: 1.5rem; }
+        .header p { color: #64748b; margin: 0; font-size: 0.9rem; }
+        
+        .container { 
+            position: relative; 
+            width: 100%; 
+            max-width: 640px; 
+            aspect-ratio: 4/3; 
+            border-radius: 12px; overflow: hidden; 
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.8);
+            background: #111;
+        }
+        
+        video, canvas { 
+            position: absolute; top: 0; left: 0; 
+            width: 100%; height: 100%; 
+            z-index: 10; transform: scaleX(-1); object-fit: cover;
+        }
+        
+        #overlay { 
+            position: absolute; bottom: 5%; left: 50%; transform: translateX(-50%); z-index: 20; 
+            background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(10px); 
+            padding: 15px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);
+            text-align: center; width: 85%; max-width: 320px;
+        }
+        
+        #status { color: #f59e0b; font-weight: 600; font-size: 0.85rem; letter-spacing: 1px; margin-bottom: 8px; text-transform: uppercase; }
+        
+        .metric-main { 
+            display: flex; align-items: center; justify-content: center; gap: 10px;
+            font-size: 2.2rem; font-weight: bold; color: #10b981; margin: 5px 0; 
+        }
+        
+        .metric-sub { font-size: 0.9rem; color: #94a3b8; }
+        
+        /* Static, clean indicator dot instead of a beating heart */
+        .pulse-indicator {
+            width: 12px; height: 12px; border-radius: 50%;
+            background-color: #334155; /* Dim initially */
+            transition: background-color 0.3s ease;
+        }
+        .pulse-indicator.active { background-color: #ef4444; }
+        
+        .controls { 
+            margin-top: 20px; display: flex; gap: 10px; width: 100%; max-width: 640px; 
+            justify-content: center; flex-wrap: wrap;
+        }
+        
+        button { 
+            background: #3b82f6; color: white; border: none; padding: 14px 20px; 
+            font-size: 1rem; font-weight: 600; border-radius: 8px; cursor: pointer;
+            transition: background 0.2s; flex: 1; min-width: 200px; max-width: 300px;
+        }
+        button:active { transform: scale(0.98); }
+        button:disabled { background: #334155; cursor: not-allowed; color: #94a3b8; }
+        #cancelBtn { background: #ef4444; }
+        
+        .progress-bar { height: 4px; background: #334155; width: 100%; border-radius: 2px; margin-top: 10px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.2s linear; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>Vitals Engine Edge</h1>
+        <p>Optical Diagnostics</p>
+    </div>
+
+    <div class="container">
+        <video id="videoElement" autoplay playsinline class="hidden"></video>
+        <canvas id="outputCanvas" width="640" height="480"></canvas>
+        
+        <div id="overlay" class="hidden">
+            <div id="status">PHASE: IDLE</div>
+            <div class="progress-bar"><div class="progress-fill" id="progressBar"></div></div>
+            
+            <div class="metric-main">
+                <div id="pulseDot" class="pulse-indicator"></div>
+                <span><span id="hrVal">--</span> <span style="font-size: 1.2rem;">BPM</span></span>
+            </div>
+            
+            <div class="metric-sub">HRV: <span id="hrvVal" style="color: white;">--</span> ms &nbsp;|&nbsp; BR: <span id="brVal" style="color: white;">--</span></div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button id="startBtn">Initialize Scan</button>
+        <button id="cancelBtn" class="hidden">Cancel Scan</button>
+    </div>
+
+<script>
+    const videoElement = document.getElementById('videoElement');
+    const canvasElement = document.getElementById('outputCanvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const overlay = document.getElementById('overlay');
+    const progressBar = document.getElementById('progressBar');
+    const pulseDot = document.getElementById('pulseDot');
+    
+    let ws;
+    let isScanning = false;
+
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                    facingMode: "user",
+                    width: { ideal: 640 }, height: { ideal: 480 },
+                    autoGainControl: false, noiseSuppression: false, echoCancellation: false 
+                }
+            });
+            videoElement.srcObject = stream;
+            videoElement.play();
+        } catch (err) {
+            console.error("Camera error:", err);
+            alert("Camera access required. Please ensure you are on HTTPS (Ngrok).");
+        }
+    }
+
+    const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+    faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    
+    faceMesh.onResults((results) => {
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+        
+        if (results.multiFaceLandmarks) {
+            for (const landmarks of results.multiFaceLandmarks) {
+                drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION, {
+                    color: isScanning ? 'rgba(16, 185, 129, 0.4)' : 'rgba(59, 130, 246, 0.4)',
+                    lineWidth: 1
+                });
+            }
+        }
+        canvasCtx.restore();
+
+        if (isScanning && ws && ws.readyState === WebSocket.OPEN) {
+            const frameData = canvasElement.toDataURL('image/jpeg', 0.7);
+            ws.send(JSON.stringify({ type: 'frame', image: frameData }));
+        }
+    });
+
+    startCamera(); // Start our custom, strict-constraint camera
+
+    let lastVideoTime = -1;
+    async function processVideo() {
+        if (!videoElement.paused && !videoElement.ended) {
+            // Only send the frame to MediaPipe if it's a new frame
+            if (videoElement.currentTime !== lastVideoTime) {
+                lastVideoTime = videoElement.currentTime;
+                await faceMesh.send({image: videoElement});
+            }
+        }
+        // Loop this function synced with your monitor's refresh rate
+        requestAnimationFrame(processVideo); 
+    }
+
+    // Wait until the camera actually spins up before feeding it to the math model
+    videoElement.addEventListener('playing', () => {
+        requestAnimationFrame(processVideo);
+    });
+
+    function resetUI() {
+        isScanning = false;
+        startBtn.classList.remove('hidden');
+        cancelBtn.classList.add('hidden');
+        overlay.classList.add('hidden');
+        pulseDot.classList.remove('active');
+        if(ws) ws.close();
+    }
+
+    cancelBtn.addEventListener('click', () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'command', action: 'STOP_SCAN' }));
+        }
+        resetUI();
+        
+        // Flash a cancelled message
+        document.getElementById('status').innerText = "SCAN CANCELLED";
+        document.getElementById('status').style.color = '#ef4444'; // Red
+        overlay.classList.remove('hidden'); 
+    });
+
+    startBtn.addEventListener('click', () => {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws/vitals`);
+        
+        ws.onopen = () => {
+            isScanning = true;
+            overlay.classList.remove('hidden');
+            startBtn.classList.add('hidden');
+            cancelBtn.classList.remove('hidden');
+            
+            document.getElementById('hrVal').innerText = "--";
+            document.getElementById('hrvVal').innerText = "--";
+            document.getElementById('brVal').innerText = "--";
+            progressBar.style.width = "0%";
+            pulseDot.classList.remove('active'); // Gray while calibrating
+            
+            ws.send(JSON.stringify({ type: 'command', action: 'START_SCAN' }));
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            document.getElementById('status').innerText = data.phase;
+            if (data.progress !== undefined) progressBar.style.width = `${data.progress}%`;
+            
+            if (data.phase === 'CONVERGED') {
+                document.getElementById('status').style.color = '#10b981';
+                resetUI();
+                startBtn.innerText = "Start New Scan";
+                startBtn.classList.remove('hidden');
+                overlay.classList.remove('hidden');
+                pulseDot.classList.add('active'); // Red when complete
+            } else {
+                document.getElementById('status').style.color = '#f59e0b';
+            }
+            
+            if (data.hr) {
+                document.getElementById('hrVal').innerText = data.hr.toFixed(1);
+                pulseDot.classList.add('active'); // Turn solid red when we get a signal
+            }
+            if (data.hrv) document.getElementById('hrvVal').innerText = data.hrv.toFixed(1);
+            if (data.br) document.getElementById('brVal').innerText = data.br.toFixed(1);
+        };
+        
+        ws.onerror = (err) => {
+            console.error("WebSocket Error:", err);
+            resetUI();
+            alert("Connection lost. Ensure you are using the Ngrok HTTPS link.");
+        };
+    });
+</script>
+</body>
+</html>
