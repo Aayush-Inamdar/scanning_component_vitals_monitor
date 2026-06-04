@@ -119,6 +119,7 @@ class FaceMeshProcessor:
     def process(
         self,
         frame_bgr: np.ndarray,
+        timestamp_ms: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray | None, bool]:
         """
         Detect face landmarks and return a skin-ROI-masked frame.
@@ -139,8 +140,12 @@ class FaceMeshProcessor:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
-        # VIDEO mode requires a strictly increasing timestamp in ms
-        self._frame_ts_ms += 1
+        # VIDEO mode requires a strictly increasing timestamp in ms.
+        if timestamp_ms is None:
+            timestamp_ms = self._frame_ts_ms + 1
+        if timestamp_ms <= self._frame_ts_ms:
+            timestamp_ms = self._frame_ts_ms + 1
+        self._frame_ts_ms = timestamp_ms
         result = self._landmarker.detect_for_video(mp_image, self._frame_ts_ms)
 
         if not result.face_landmarks:

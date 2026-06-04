@@ -84,7 +84,10 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 frame_count += 1
 
                 # --- MediaPipe ROI masking ----------------------------
-                masked_frame, roi_mask, face_found = mesh.process(frame_bgr)
+                masked_frame, roi_mask, face_found = mesh.process(
+                    frame_bgr,
+                    timestamp_ms=int(now * 1000),
+                )
 
                 if face_found:
                     face_rgb = cv2.cvtColor(masked_frame, cv2.COLOR_BGR2RGB)

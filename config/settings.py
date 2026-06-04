@@ -21,7 +21,7 @@ CSV_HEADERS: list[str] = [
 # Signal quality and timing
 SQI_THRESHOLD: float = 0.3
 MEASUREMENT_INTERVAL_SEC: float = 5.0
-HR_WINDOW_START: int = -30
+HR_WINDOW_START: int = -12
 
 # Camera
 CAMERA_INDEX: int = 0

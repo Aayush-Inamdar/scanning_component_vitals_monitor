@@ -321,6 +321,7 @@ let ws             = null;
 let stream         = null;
 let timer          = null;
 let sending        = false;
+let waitingForReply= false;
 let phase          = "idle";
 let meshFrameCount = 0;
 
@@ -447,12 +448,6 @@ function initMeshOverlay() {
                 z: lm.z
             }));
 
-            console.log(
-                "nose",
-                mirrored[1].x.toFixed(2),
-                mirrored[1].y.toFixed(2)
-            );
-
         /*    drawConnectors(meshCtx, mirrored, FACEMESH_FACE_OVAL,
                 { color: "rgba(0,255,180,0.7)", lineWidth: 1.5 });
 
@@ -553,6 +548,7 @@ function startCapture() {
 
     timer = setInterval(() => {
         if (sending) return;
+        if (waitingForReply) return;
         if (!video.videoWidth || !video.videoHeight) return;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
@@ -562,17 +558,21 @@ function startCapture() {
         ctx.drawImage(video, 0, 0, 640, 480);
         capCanvas.toBlob(blob => {
             try {
-                if (blob && ws && ws.readyState === WebSocket.OPEN) ws.send(blob);
+                if (blob && ws && ws.readyState === WebSocket.OPEN) {
+                    waitingForReply = true;
+                    ws.send(blob);
+                }
             } finally {
                 sending = false;
             }
-        }, "image/jpeg", 1);
+        }, "image/png");
     }, 1000 / FPS);
 }
 
 function stopCapture() {
     if (timer) { clearInterval(timer); timer = null; }
     sending = false;
+    waitingForReply = false;
 }
 
 function stopAll() {
@@ -606,6 +606,7 @@ function connectWS() {
     ws.onerror = () => setStatus("WebSocket error", "red");
 
     ws.onmessage = (e) => {
+        waitingForReply = false;
         const d = JSON.parse(e.data);
 
         // ── Always update BVP ──────────────────────────────────────

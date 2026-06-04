@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 import cv2
 import rppg
+import numpy as np
 
 from config.settings import (
     CAMERA_INDEX,
@@ -51,18 +52,40 @@ class VitalsMonitor:
         self._csv_path = csv_path
         self._camera_index = camera_index
         init_csv(self._csv_path)
-        self._model = model if model is not None else rppg.Model("ME-flow.rlap")
+        self._model = model if model is not None else rppg.Model()
 
     def run(self) -> None:
         """Start camera capture and process frames until the user quits."""
         print("Model loaded. Starting camera...")
 
-        cap = cv2.VideoCapture(self._camera_index)
+        import os
+        backend = cv2.CAP_DSHOW if os.name == 'nt' else cv2.CAP_ANY
+        cap = cv2.VideoCapture(self._camera_index, backend)
+        
         if not cap.isOpened():
-            raise RuntimeError(f"Cannot open camera index {self._camera_index}")
+            cap = cv2.VideoCapture(self._camera_index)
+            if not cap.isOpened():
+                raise RuntimeError(f"Cannot open camera index {self._camera_index}")
 
-        print("Camera open. Reading vitals every 5 seconds...\n")
-        last_measurement = 0.0
+        # Force uncompressed pixels and high resolution
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'YUYV'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+
+        # Apply your chosen -3 manual exposure
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25) 
+        cap.set(cv2.CAP_PROP_EXPOSURE, -3)        
+        cap.set(cv2.CAP_PROP_AUTO_WB, 0)          
+
+        print("Camera open. Waiting for stable vitals...\n")
+        
+        expected_fps = 30.0
+        time_step = 1.0 / expected_fps
+        base_ts = time.time()
+        frame_idx = 0
+        last_measurement = base_ts 
+        stable_bbox = None
 
         with self._model, FaceMeshProcessor() as mesh:
             try:
@@ -71,37 +94,67 @@ class VitalsMonitor:
                     if not ret:
                         break
 
-                    ts = time.time()
+                    current_ts = time.time()
+                    
+                    smoothed_frame = cv2.GaussianBlur(frame_bgr, (5, 5), 0)
 
-                    # --- MediaPipe: get skin-only masked crop ----------
-                    masked_frame, roi_mask, face_found = mesh.process(frame_bgr)
+                    masked_frame, roi_mask, face_found = mesh.process(
+                        smoothed_frame,
+                        timestamp_ms=int(time.monotonic() * 1000),
+                    )
 
                     if face_found:
-                        # Feed the clean masked frame to open-rppg.
-                        # update_face expects RGB.
-                        face_rgb = cv2.cvtColor(masked_frame, cv2.COLOR_BGR2RGB)
-                        self._model.update_face(face_rgb, ts=ts, hasface=True)
+                        x, y, w, h = cv2.boundingRect(roi_mask)
+                        
+                        if w > 0 and h > 0:
+                            size = max(w, h)
+                            center_x = x + w // 2
+                            center_y = y + h // 2
+                            
+                            # Stable EMA Box
+                            if stable_bbox is None:
+                                stable_bbox = [center_x, center_y, size]
+                            else:
+                                alpha = 0.15 
+                                stable_bbox[0] = stable_bbox[0] * (1 - alpha) + center_x * alpha
+                                stable_bbox[1] = stable_bbox[1] * (1 - alpha) + center_y * alpha
+                                stable_bbox[2] = stable_bbox[2] * (1 - alpha) + size * alpha
+                                
+                            s_cx = int(stable_bbox[0])
+                            s_cy = int(stable_bbox[1])
+                            s_size = int(stable_bbox[2])
+                            
+                            half_size = s_size // 2 
+                            
+                            y1 = max(0, s_cy - half_size)
+                            y2 = min(frame_bgr.shape[0], s_cy + half_size)
+                            x1 = max(0, s_cx - half_size)
+                            x2 = min(frame_bgr.shape[1], s_cx + half_size)
+                            
+                            # Tight crop to remove black pixels
+                            cropped_face = smoothed_frame[y1:y2, x1:x2]
+                            
+                            if cropped_face.size > 0:
+                                face_rgb = cv2.cvtColor(cropped_face, cv2.COLOR_BGR2RGB)
+                                self._model.update_face(face_rgb, ts=current_ts, hasface=True)
+                            else:
+                                self._model.update_face(None, ts=current_ts, hasface=False)
+                        else:
+                            self._model.update_face(None, ts=current_ts, hasface=False)
                     else:
-                        # Tell open-rppg no face this frame so it doesn't
-                        # stall waiting for input.
-                        self._model.update_face(None, ts=ts, hasface=False)
+                        self._model.update_face(None, ts=current_ts, hasface=False)
 
-                    # --- Periodic vitals measurement -------------------
-                    if ts - last_measurement > MEASUREMENT_INTERVAL_SEC:
+                    if current_ts - last_measurement > MEASUREMENT_INTERVAL_SEC:
                         self._process_measurement()
-                        last_measurement = ts
+                        last_measurement = current_ts
 
-                    # --- Display: draw ROI contour on original frame ---
+                    # Display
                     display = mesh.draw_landmarks(frame_bgr, roi_mask)
                     status = "Face found" if face_found else "No face"
                     cv2.putText(
-                        display,
-                        status,
-                        (10, 24),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        FACE_BOX_COLOR_BGR if face_found else (0, 0, 200),
-                        2,
+                        display, status, (10, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        FACE_BOX_COLOR_BGR if face_found else (0, 0, 200), 2
                     )
                     cv2.imshow(WINDOW_TITLE, display)
 
