@@ -4,78 +4,257 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Clinical Vitals Engine</title>
-    
+
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
     <style>
-        body { 
-            background: #000000; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            display: flex; flex-direction: column; align-items: center; justify-content: center; 
-            min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box;
+        *, *::before, *::after { box-sizing: border-box; }
+
+        body {
+            background: #000;
+            color: #f8fafc;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 12px;
+            min-height: 100vh;
         }
-        
-        .header { text-align: center; margin-bottom: 15px; width: 100%; }
-        .header h1 { margin: 0 0 5px 0; font-size: 1.5rem; }
-        .header p { color: #64748b; margin: 0; font-size: 0.9rem; }
-        
-        .container { 
-            position: relative; 
-            width: 100%; 
-            max-width: 640px; 
-            aspect-ratio: 4/3; 
-            border-radius: 12px; overflow: hidden; 
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.8);
+
+        /* ── Header ── */
+        .header {
+            text-align: center;
+            margin-bottom: 12px;
+        }
+        .header h1 { margin: 0 0 4px 0; font-size: 1.4rem; }
+        .header p  { color: #64748b; margin: 0; font-size: 0.85rem; }
+
+        /* ── Main grid: side-by-side on desktop, stacked on phone ── */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto;
+            gap: 12px;
+            width: 100%;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        @media (max-width: 767px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* ── Video panel ── */
+        .video-panel {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 4/3;
+            border-radius: 12px;
+            overflow: hidden;
             background: #111;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.8);
         }
-        
-        video, canvas { 
-            position: absolute; top: 0; left: 0; 
-            width: 100%; height: 100%; 
-            z-index: 10; transform: scaleX(-1); object-fit: cover;
+
+        video, #outputCanvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 10;
+            transform: scaleX(-1);
+            object-fit: cover;
         }
-        
-        #overlay { 
-            position: absolute; bottom: 5%; left: 50%; transform: translateX(-50%); z-index: 20; 
-            background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(10px); 
-            padding: 15px 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);
-            text-align: center; width: 85%; max-width: 320px;
+
+        /* ── In-video overlay (status + HR) ── */
+        #overlay {
+            position: absolute;
+            bottom: 5%;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 20;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(10px);
+            padding: 12px 18px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            text-align: center;
+            width: 88%;
+            max-width: 300px;
         }
-        
-        #status { color: #f59e0b; font-weight: 600; font-size: 0.85rem; letter-spacing: 1px; margin-bottom: 8px; text-transform: uppercase; }
-        
-        .metric-main { 
-            display: flex; align-items: center; justify-content: center; gap: 10px;
-            font-size: 2.2rem; font-weight: bold; color: #10b981; margin: 5px 0; 
+
+        #status {
+            color: #f59e0b;
+            font-weight: 600;
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+            margin-bottom: 6px;
+            text-transform: uppercase;
         }
-        
-        .metric-sub { font-size: 0.9rem; color: #94a3b8; }
-        
-        /* Static, clean indicator dot instead of a beating heart */
+
+        .metric-main {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-size: 2rem;
+            font-weight: bold;
+            color: #10b981;
+            margin: 4px 0;
+        }
+
+        .metric-sub { font-size: 0.85rem; color: #94a3b8; }
+
         .pulse-indicator {
-            width: 12px; height: 12px; border-radius: 50%;
-            background-color: #334155; /* Dim initially */
+            width: 11px; height: 11px;
+            border-radius: 50%;
+            background-color: #334155;
             transition: background-color 0.3s ease;
+            flex-shrink: 0;
         }
         .pulse-indicator.active { background-color: #ef4444; }
-        
-        .controls { 
-            margin-top: 20px; display: flex; gap: 10px; width: 100%; max-width: 640px; 
-            justify-content: center; flex-wrap: wrap;
+
+        .progress-bar {
+            height: 4px;
+            background: #334155;
+            width: 100%;
+            border-radius: 2px;
+            margin-top: 8px;
+            overflow: hidden;
         }
-        
-        button { 
-            background: #3b82f6; color: white; border: none; padding: 14px 20px; 
-            font-size: 1rem; font-weight: 600; border-radius: 8px; cursor: pointer;
-            transition: background 0.2s; flex: 1; min-width: 200px; max-width: 300px;
+        .progress-fill {
+            height: 100%;
+            background: #3b82f6;
+            width: 0%;
+            transition: width 0.2s linear;
+        }
+
+        /* ── Graph panel ── */
+        .graph-panel {
+            width: 100%;
+            aspect-ratio: 4/3;
+            background: #0f172a;
+            border-radius: 12px;
+            border: 1px solid #1e293b;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.8);
+            display: flex;
+            flex-direction: column;
+            padding: 14px 14px 10px 14px;
+        }
+
+        .graph-title {
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: #94a3b8;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .graph-title .graph-badge {
+            font-size: 0.65rem;
+            background: #1e293b;
+            color: #64748b;
+            padding: 2px 7px;
+            border-radius: 20px;
+            font-weight: 500;
+        }
+        .graph-title .graph-badge.live {
+            background: rgba(16,185,129,0.15);
+            color: #10b981;
+        }
+        .graph-title .graph-badge.final {
+            background: rgba(59,130,246,0.15);
+            color: #3b82f6;
+        }
+
+        .graph-placeholder {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #334155;
+            font-size: 0.85rem;
+        }
+
+        .chart-wrap {
+            flex: 1;
+            position: relative;
+            display: none;
+        }
+        .chart-wrap.visible { display: block; }
+
+        /* ── Metrics strip (below both panels) ── */
+        .metrics-strip {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            max-width: 1100px;
+            margin: 12px auto 0 auto;
+            width: 100%;
+        }
+
+        .metric-card {
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 10px;
+            padding: 12px 10px;
+            text-align: center;
+        }
+
+        .metric-card .mc-label {
+            font-size: 0.7rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+
+        .metric-card .mc-value {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #10b981;
+        }
+
+        .metric-card .mc-unit {
+            font-size: 0.7rem;
+            color: #475569;
+            margin-top: 2px;
+        }
+
+        /* ── Controls ── */
+        .controls {
+            display: flex;
+            gap: 10px;
+            max-width: 1100px;
+            margin: 12px auto 0 auto;
+            width: 100%;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+            flex: 1;
+            min-width: 180px;
+            max-width: 280px;
         }
         button:active { transform: scale(0.98); }
         button:disabled { background: #334155; cursor: not-allowed; color: #94a3b8; }
         #cancelBtn { background: #ef4444; }
-        
-        .progress-bar { height: 4px; background: #334155; width: 100%; border-radius: 2px; margin-top: 10px; overflow: hidden; }
-        .progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.2s linear; }
+
         .hidden { display: none !important; }
     </style>
 </head>
@@ -86,20 +265,55 @@
         <p>Optical Diagnostics</p>
     </div>
 
-    <div class="container">
-        <video id="videoElement" autoplay playsinline class="hidden"></video>
-        <canvas id="outputCanvas" width="640" height="480"></canvas>
-        
-        <div id="overlay" class="hidden">
-            <div id="status">PHASE: IDLE</div>
-            <div class="progress-bar"><div class="progress-fill" id="progressBar"></div></div>
-            
-            <div class="metric-main">
-                <div id="pulseDot" class="pulse-indicator"></div>
-                <span><span id="hrVal">--</span> <span style="font-size: 1.2rem;">BPM</span></span>
+    <div class="main-grid">
+
+        <div class="video-panel">
+            <video id="videoElement" autoplay playsinline class="hidden"></video>
+            <canvas id="outputCanvas" width="640" height="480"></canvas>
+
+            <div id="overlay" class="hidden">
+                <div id="status">PHASE: IDLE</div>
+                <div class="progress-bar"><div class="progress-fill" id="progressBar"></div></div>
+                <div class="metric-main">
+                    <div id="pulseDot" class="pulse-indicator"></div>
+                    <span><span id="hrVal">--</span> <span style="font-size:1.1rem;">BPM</span></span>
+                </div>
+                <div class="metric-sub">
+                    HRV: <span id="hrvValOverlay" style="color:white;">--</span> ms
+                    &nbsp;|&nbsp;
+                    BR: <span id="brValOverlay" style="color:white;">--</span>
+                </div>
             </div>
-            
-            <div class="metric-sub">HRV: <span id="hrvVal" style="color: white;">--</span> ms &nbsp;|&nbsp; BR: <span id="brVal" style="color: white;">--</span></div>
+        </div>
+
+        <div class="graph-panel">
+            <div class="graph-title">
+                rPPG Signal
+                <span class="graph-badge" id="graphBadge">WAITING</span>
+            </div>
+            <div class="graph-placeholder" id="graphPlaceholder">Start a scan to see the signal</div>
+            <div class="chart-wrap" id="chartWrap">
+                <canvas id="signalChart"></canvas>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="metrics-strip">
+        <div class="metric-card">
+            <div class="mc-label">Heart Rate</div>
+            <div class="mc-value" id="hrStrip">--</div>
+            <div class="mc-unit">BPM</div>
+        </div>
+        <div class="metric-card">
+            <div class="mc-label">HRV (RMSSD)</div>
+            <div class="mc-value" id="hrvStrip">--</div>
+            <div class="mc-unit">ms</div>
+        </div>
+        <div class="metric-card">
+            <div class="mc-label">Breathing Rate</div>
+            <div class="mc-value" id="brStrip">--</div>
+            <div class="mc-unit">breaths/min</div>
         </div>
     </div>
 
@@ -108,26 +322,77 @@
         <button id="cancelBtn" class="hidden">Cancel Scan</button>
     </div>
 
+<canvas id="exportCanvas" class="hidden" width="900" height="420"></canvas>
+
 <script>
-    const videoElement = document.getElementById('videoElement');
-    const canvasElement = document.getElementById('outputCanvas');
-    const canvasCtx = canvasElement.getContext('2d');
-    const startBtn = document.getElementById('startBtn');
-    const cancelBtn = document.getElementById('cancelBtn');
-    const overlay = document.getElementById('overlay');
-    const progressBar = document.getElementById('progressBar');
-    const pulseDot = document.getElementById('pulseDot');
-    
+    // ── Element refs ──
+    const videoElement   = document.getElementById('videoElement');
+    const canvasElement  = document.getElementById('outputCanvas');
+    const canvasCtx      = canvasElement.getContext('2d');
+    const startBtn       = document.getElementById('startBtn');
+    const cancelBtn      = document.getElementById('cancelBtn');
+    const overlay        = document.getElementById('overlay');
+    const progressBar    = document.getElementById('progressBar');
+    const pulseDot       = document.getElementById('pulseDot');
+    const graphBadge     = document.getElementById('graphBadge');
+    const graphPlaceholder = document.getElementById('graphPlaceholder');
+    const chartWrap      = document.getElementById('chartWrap');
+    const exportCanvas   = document.getElementById('exportCanvas');
+
     let ws;
     let isScanning = false;
 
+    // ── Chart setup ──
+    const chartCtx = document.getElementById('signalChart').getContext('2d');
+    let signalChart = null;
+
+    function initChart(spectrumData) {
+        if (signalChart) { signalChart.destroy(); }
+        
+        // Ensure values are numbers before toFixed
+        const labels = spectrumData.bpm.map(b => Number(b).toFixed(0));
+
+        signalChart = new Chart(chartCtx, {
+            type: 'line',
+            data: {
+                labels: labels, // X-Axis (BPM)
+                datasets: [{
+                    label: 'Signal Power',
+                    data: spectrumData.power, // Y-Axis (Power)
+                    borderColor: '#10b981', // Clinical Green
+                    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                    borderWidth: 2,
+                    fill: true,
+                    pointRadius: 0,
+                    tension: 0.4
+                }]
+            },
+            options: {
+                animation: false, // INSTANT RENDER FOR FLAWLESS SCREENSHOT
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { display: false }, ticks: { color: '#64748b' } },
+                    y: { display: false } // Hide Y axis for clean mountain look
+                }
+            }
+        });
+
+        graphPlaceholder.style.display = 'none';
+        chartWrap.classList.add('visible');
+        graphBadge.textContent = 'FINAL LOG';
+        graphBadge.className   = 'graph-badge final';
+    }
+
+    // ── Camera ──
     async function startCamera() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { 
+                video: {
                     facingMode: "user",
                     width: { ideal: 640 }, height: { ideal: 480 },
-                    autoGainControl: false, noiseSuppression: false, echoCancellation: false 
+                    autoGainControl: false, noiseSuppression: false, echoCancellation: false
                 }
             });
             videoElement.srcObject = stream;
@@ -138,14 +403,15 @@
         }
     }
 
+    // ── MediaPipe FaceMesh ──
     const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
     faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-    
+
     faceMesh.onResults((results) => {
         canvasCtx.save();
         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
         canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-        
+
         if (results.multiFaceLandmarks) {
             for (const landmarks of results.multiFaceLandmarks) {
                 drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION, {
@@ -162,33 +428,88 @@
         }
     });
 
-    startCamera(); // Start our custom, strict-constraint camera
+    startCamera();
 
     let lastVideoTime = -1;
     async function processVideo() {
         if (!videoElement.paused && !videoElement.ended) {
-            // Only send the frame to MediaPipe if it's a new frame
             if (videoElement.currentTime !== lastVideoTime) {
                 lastVideoTime = videoElement.currentTime;
                 await faceMesh.send({image: videoElement});
             }
         }
-        // Loop this function synced with your monitor's refresh rate
-        requestAnimationFrame(processVideo); 
+        requestAnimationFrame(processVideo);
     }
 
-    // Wait until the camera actually spins up before feeding it to the math model
     videoElement.addEventListener('playing', () => {
         requestAnimationFrame(processVideo);
     });
 
-    function resetUI() {
+    // ── Capture and send final image to server ──
+    function captureAndSendFinalImage(hr, hrv, br) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!signalChart) return;
+
+        const expCtx = exportCanvas.getContext('2d');
+        expCtx.clearRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+        // Background
+        expCtx.fillStyle = '#0f172a';
+        expCtx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+        // Title
+        expCtx.fillStyle = '#94a3b8';
+        expCtx.font = '600 13px Segoe UI, sans-serif';
+        expCtx.fillText('PURE VITALS ENGINE  —  SCAN RESULT', 24, 28);
+
+        // Timestamp
+        const ts = new Date().toLocaleString();
+        expCtx.fillStyle = '#475569';
+        expCtx.font = '11px Segoe UI, sans-serif';
+        expCtx.fillText(ts, 24, 46);
+
+        // Metrics
+        const metrics = [
+            { label: 'HR', value: hr ? hr.toFixed(1) : '--', unit: 'BPM',  x: 650 },
+            { label: 'HRV', value: hrv ? hrv.toFixed(1) : '--', unit: 'ms', x: 760 },
+            { label: 'BR', value: br ? br.toFixed(1) : '--', unit: 'br/min', x: 850 }
+        ];
+        metrics.forEach(m => {
+            expCtx.fillStyle = '#10b981';
+            expCtx.font = 'bold 20px Segoe UI, sans-serif';
+            expCtx.fillText(m.value, m.x, 28);
+            expCtx.fillStyle = '#64748b';
+            expCtx.font = '10px Segoe UI, sans-serif';
+            expCtx.fillText(m.label + ' ' + m.unit, m.x, 44);
+        });
+
+        // Draw chart into export canvas
+        const chartImage = signalChart.toBase64Image('image/png', 1.0);
+        const img = new Image();
+        img.onload = () => {
+            expCtx.drawImage(img, 0, 60, exportCanvas.width, exportCanvas.height - 60);
+
+            // Border
+            expCtx.strokeStyle = '#1e293b';
+            expCtx.lineWidth = 1;
+            expCtx.strokeRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+            const finalImage = exportCanvas.toDataURL('image/png');
+            ws.send(JSON.stringify({ type: 'scan_result_image', image: finalImage }));
+        };
+        img.src = chartImage;
+    }
+
+    // ── UI helpers ──
+    let lastHr = null, lastHrv = null, lastBr = null;
+
+    function resetUI(closeSocket = true) {
         isScanning = false;
         startBtn.classList.remove('hidden');
         cancelBtn.classList.add('hidden');
         overlay.classList.add('hidden');
         pulseDot.classList.remove('active');
-        if(ws) ws.close();
+        if (closeSocket && ws) ws.close();
     }
 
     cancelBtn.addEventListener('click', () => {
@@ -196,57 +517,93 @@
             ws.send(JSON.stringify({ type: 'command', action: 'STOP_SCAN' }));
         }
         resetUI();
-        
-        // Flash a cancelled message
-        document.getElementById('status').innerText = "SCAN CANCELLED";
-        document.getElementById('status').style.color = '#ef4444'; // Red
-        overlay.classList.remove('hidden'); 
+        document.getElementById('status').innerText  = "SCAN CANCELLED";
+        document.getElementById('status').style.color = '#ef4444';
+        overlay.classList.remove('hidden');
+
+        // Reset graph
+        graphBadge.textContent = 'WAITING';
+        graphBadge.className   = 'graph-badge';
+        graphPlaceholder.style.display = '';
+        chartWrap.classList.remove('visible');
     });
 
     startBtn.addEventListener('click', () => {
+        // Reset graph state on new scan
+        graphBadge.textContent = 'WAITING';
+        graphBadge.className   = 'graph-badge';
+        graphPlaceholder.style.display = '';
+        chartWrap.classList.remove('visible');
+        lastHr = null; lastHrv = null; lastBr = null;
+
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         ws = new WebSocket(`${protocol}//${window.location.host}/ws/vitals`);
-        
+
         ws.onopen = () => {
             isScanning = true;
             overlay.classList.remove('hidden');
             startBtn.classList.add('hidden');
             cancelBtn.classList.remove('hidden');
-            
-            document.getElementById('hrVal').innerText = "--";
-            document.getElementById('hrvVal').innerText = "--";
-            document.getElementById('brVal').innerText = "--";
+
+            document.getElementById('hrVal').innerText       = "--";
+            document.getElementById('hrvValOverlay').innerText = "--";
+            document.getElementById('brValOverlay').innerText  = "--";
+            document.getElementById('hrStrip').innerText      = "--";
+            document.getElementById('hrvStrip').innerText     = "--";
+            document.getElementById('brStrip').innerText      = "--";
             progressBar.style.width = "0%";
-            pulseDot.classList.remove('active'); // Gray while calibrating
-            
+            pulseDot.classList.remove('active');
+
             ws.send(JSON.stringify({ type: 'command', action: 'START_SCAN' }));
         };
 
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            
+
             document.getElementById('status').innerText = data.phase;
             if (data.progress !== undefined) progressBar.style.width = `${data.progress}%`;
-            
+
+            // Update metrics everywhere they appear
+            if (data.hr) {
+                lastHr = data.hr;
+                document.getElementById('hrVal').innerText    = data.hr.toFixed(1);
+                document.getElementById('hrStrip').innerText  = data.hr.toFixed(1);
+                pulseDot.classList.add('active');
+            }
+            if (data.hrv) {
+                lastHrv = data.hrv;
+                document.getElementById('hrvValOverlay').innerText = data.hrv.toFixed(1);
+                document.getElementById('hrvStrip').innerText      = data.hrv.toFixed(1);
+            }
+            if (data.br) {
+                lastBr = data.br;
+                document.getElementById('brValOverlay').innerText = data.br.toFixed(1);
+                document.getElementById('brStrip').innerText      = data.br.toFixed(1);
+            }
+
+            // Update graph if signal present
+            if (data.spectrum) {
+                initChart(data.spectrum);
+            }
+
             if (data.phase === 'CONVERGED') {
                 document.getElementById('status').style.color = '#10b981';
-                resetUI();
+                resetUI(false); // keep socket open — image send needs it
                 startBtn.innerText = "Start New Scan";
                 startBtn.classList.remove('hidden');
                 overlay.classList.remove('hidden');
-                pulseDot.classList.add('active'); // Red when complete
+                pulseDot.classList.add('active');
+
+                // Capture and save the final image, then close socket after send
+                setTimeout(() => {
+                    captureAndSendFinalImage(lastHr, lastHrv, lastBr);
+                    setTimeout(() => { if (ws) ws.close(); }, 500);
+                }, 400);
             } else {
                 document.getElementById('status').style.color = '#f59e0b';
             }
-            
-            if (data.hr) {
-                document.getElementById('hrVal').innerText = data.hr.toFixed(1);
-                pulseDot.classList.add('active'); // Turn solid red when we get a signal
-            }
-            if (data.hrv) document.getElementById('hrvVal').innerText = data.hrv.toFixed(1);
-            if (data.br) document.getElementById('brVal').innerText = data.br.toFixed(1);
         };
-        
+
         ws.onerror = (err) => {
             console.error("WebSocket Error:", err);
             resetUI();

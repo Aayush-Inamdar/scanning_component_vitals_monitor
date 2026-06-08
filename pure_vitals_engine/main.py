@@ -5,7 +5,8 @@ def main():
     try:
         service.run()
     except KeyboardInterrupt:
-        print("\n[!] Engine shutting down safely.")
+        print("\n[!] Engine interrupted by user. Shutting down safely.")
+        service.generate_and_save_graph()
 
 if __name__ == "__main__":
     main()

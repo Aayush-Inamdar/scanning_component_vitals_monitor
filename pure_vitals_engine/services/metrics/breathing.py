@@ -10,11 +10,15 @@ def calculate_breathing(pos_signal, fps, previous_br=None):
     b_filt, a_filt = signal.butter(3, [BR_MIN_HZ, BR_MAX_HZ], btype='bandpass', fs=fps)
     resp_wave = signal.filtfilt(b_filt, a_filt, pos_detrended)
 
+    # --- CRASH FIX: Scale nfft dynamically for long baseline scans ---
+    current_len = len(resp_wave)
+    safe_nfft = max(2048, current_len)
+
     freqs, psd = signal.welch(
         resp_wave, 
         fs=fps, 
-        nperseg=len(resp_wave),
-        nfft=2048
+        nperseg=current_len,
+        nfft=safe_nfft
     )
     
     valid_indices = np.where((freqs >= BR_MIN_HZ) & (freqs <= BR_MAX_HZ))[0]

@@ -1,12 +1,4 @@
-"""MediaPipe Face Landmarker processor for precise skin ROI extraction.
-
-Uses the MediaPipe Tasks API (mediapipe >= 0.10.x) with the FaceLandmarker
-model. On first run the model file is downloaded automatically to the
-project's data/ directory (~5 MB, one-time).
-
-ROI regions (forehead + cheeks) give the strongest BVP signal.
-Eyes, lips, hair, and background are masked out to reduce noise.
-"""
+"""MediaPipe Face Landmarker processor for precise skin ROI extraction."""
 
 import cv2
 import numpy as np
@@ -27,7 +19,6 @@ class FaceMeshProcessor:
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
         
-        # NEW: Jitter Smoothing State
         self.prev_radius = None
         self.prev_anchors = None
 
@@ -44,54 +35,53 @@ class FaceMeshProcessor:
 
         mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         face_found = False
+        nose_y = None  
 
         if detection_result.face_landmarks:
             face_found = True
             landmarks = detection_result.face_landmarks[0]
             h, w, _ = frame.shape
             
+            # --- 1. BCG KINEMATIC EXTRACTION (Titanium Constellation) ---
+            # Expanded from 3 points to 15 points across the nasal and frontal bones.
+            # Averaging this massive rigid cluster crushes independent pixel jitter.
+            rigid_ids = [4, 5, 6, 8, 9, 10, 151, 195, 197, 107, 336, 108, 337, 109, 338]
+            nose_y = np.mean([landmarks[i].y * h for i in rigid_ids])
+            
+            # --- 2. rPPG COLOR EXTRACTION ---
             face_width = abs(landmarks[454].x - landmarks[234].x) * w
             target_radius = face_width * 0.10 
 
             target_anchors = [
-                (landmarks[151].x * w, landmarks[151].y * h), # Forehead
-                (landmarks[205].x * w, landmarks[205].y * h), # Left Cheek
-                (landmarks[425].x * w, landmarks[425].y * h)  # Right Cheek
+                (landmarks[151].x * w, landmarks[151].y * h), 
+                (landmarks[205].x * w, landmarks[205].y * h), 
+                (landmarks[425].x * w, landmarks[425].y * h)  
             ]
 
-            # --- THE FIX: Exponential Moving Average (EMA) Smoothing ---
             if self.prev_radius is None:
                 self.prev_radius = target_radius
                 self.prev_anchors = target_anchors
             else:
-                # 80% old value, 20% new value. Completely dampens micro-jitter.
                 self.prev_radius = 0.8 * self.prev_radius + 0.2 * target_radius
                 for i in range(3):
                     cx = 0.8 * self.prev_anchors[i][0] + 0.2 * target_anchors[i][0]
                     cy = 0.8 * self.prev_anchors[i][1] + 0.2 * target_anchors[i][1]
                     self.prev_anchors[i] = (cx, cy)
 
-            # Draw the rock-solid isolated regions
             for pt in self.prev_anchors:
                 cv2.circle(mask, (int(pt[0]), int(pt[1])), int(self.prev_radius), 255, -1)
                 
         masked_frame = cv2.bitwise_and(frame, frame, mask=mask)
-        return masked_frame, mask, face_found
+        
+        return masked_frame, mask, face_found, nose_y
 
     def draw_landmarks(self, frame, roi_mask):
-        """Draws a clean UI overlay showing exactly what the engine is reading."""
-        # SAFETY GATE: If no face is detected yet, just return the normal video frame
         if not np.any(roi_mask):
             return frame.copy()
             
-        # Create a solid green image the same size as the webcam feed
         green_overlay = np.zeros_like(frame)
         green_overlay[:] = (0, 255, 0)
-        
-        # Blend the entire frame with the green overlay
         blended = cv2.addWeighted(frame, 0.7, green_overlay, 0.3, 0)
-        
-        # Use NumPy to elegantly stamp the blended green pixels ONLY where the mask is active
         display_frame = np.where(roi_mask[:, :, np.newaxis] > 0, blended, frame)
         
         return display_frame

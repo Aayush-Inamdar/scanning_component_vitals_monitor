@@ -1,67 +1,57 @@
 import numpy as np
 from scipy import signal
 
-def calculate_hrv(clean_pulse, fps, current_hr_bpm, previous_hrv=None):
-    """Calculates RMSSD with Dicrotic Notch Lockout and Display Inertia."""
-    if not current_hr_bpm or current_hr_bpm <= 0:
-        return previous_hrv 
+def calculate_hrv(clean_pulse, fps, current_hr_bpm=None, previous_hrv=None):
+    """Calculates RMSSD strictly using the Tachogram RR-interval extraction logic."""
+    if len(clean_pulse) == 0:
+        return previous_hrv
 
-    # 1. The Dicrotic Notch Lockout (Expect a beat based on current HR)
-    expected_gap_sec = 60.0 / current_hr_bpm
-    min_distance_frames = int((expected_gap_sec * 0.65) * fps)
+    # --- FIX: Pre-Z-Score Outlier Clipping ---
+    # Decapitates massive motion artifacts before they can inflate the standard
+    # deviation and squash the true biological peaks.
+    m_pulse = np.mean(clean_pulse)
+    s_pulse = np.std(clean_pulse)
+    clipped_pulse = np.clip(clean_pulse, m_pulse - 3.0 * s_pulse, m_pulse + 3.0 * s_pulse)
     
-    # --- THE FIX: Robust Amplitude Estimation ---
-    # Using percentiles ignores massive sudden camera glitches that 
-    # would otherwise ruin the np.max() calculation.
-    top_pulse = np.percentile(clean_pulse, 95)
-    bottom_pulse = np.percentile(clean_pulse, 5)
-    pulse_amplitude = top_pulse - bottom_pulse
-    
-    # We can safely lower this to 15% because the min_distance_frames 
-    # is already doing 90% of the heavy lifting to prevent double-counting.
-    min_prominence = pulse_amplitude * 0.15
+    # 2. Normalize to standard Z-Score
+    norm_pulse = (clipped_pulse - np.mean(clipped_pulse)) / (np.std(clipped_pulse) + 1e-8)
+
+    # 3. Peak Extraction with a rock-solid normalized prominence
+    min_dist_frames = int(fps * (60.0 / 150.0))
+    # A prominence of 0.60 is clinically safe for Z-scored data
+    prominence_val = 0.60 
 
     peaks, _ = signal.find_peaks(
-        clean_pulse, 
-        distance=min_distance_frames,
-        prominence=min_prominence
+        norm_pulse, 
+        distance=min_dist_frames, 
+        prominence=prominence_val
     )
     
-    # We need at least a few heartbeats to calculate variability
     if len(peaks) < 4: 
         return previous_hrv 
     
-    # Calculate intervals in milliseconds
-    rr_intervals = np.diff(peaks) / fps * 1000.0
+    # 4. Raw RR Intervals (ms)
+    raw_rr_intervals = np.diff(peaks) * (1000.0 / fps)
     
-    # 3. Medical Outlier Rejection
-    median_rr = np.median(rr_intervals)
+    # 5. Dynamic Artifact Filter
+    median_rr = np.median(raw_rr_intervals)
+    valid_mask = (raw_rr_intervals >= median_rr * 0.75) & (raw_rr_intervals <= median_rr * 1.25)
+    clean_rr_intervals = raw_rr_intervals[valid_mask]
     
-    # Widened to 0.75 / 1.25 to accommodate healthy Respiratory Sinus Arrhythmia
-    valid_rr = rr_intervals[
-        (rr_intervals > median_rr * 0.75) & 
-        (rr_intervals < median_rr * 1.25)
-    ]
-    
-    if len(valid_rr) < 3:
+    if len(clean_rr_intervals) < 3:
         return previous_hrv
 
-    # 4. RMSSD Calculation (The clinical standard for short-term HRV)
-    successive_diffs = np.diff(valid_rr)
+    # 6. Clinical RMSSD Calculation
+    successive_diffs = np.diff(clean_rr_intervals)
     raw_rmssd = np.sqrt(np.mean(np.square(successive_diffs)))
     
-    # 5. The 33ms Webcam Penalty Floor
-    adjusted_rmssd = max(10.0, raw_rmssd - 15.0)
+    adjusted_rmssd = max(5.0, raw_rmssd - 15.0)
     
-    # If the variance is impossibly high, it's noise. Reject it.
-    if adjusted_rmssd > 130:
+    if adjusted_rmssd > 150:
         return previous_hrv
         
-    # 6. HRV Inertia
-    # We sped up the convergence to 0.20 so the UI populates faster 
-    # once a valid signal is acquired.
     if previous_hrv is not None and previous_hrv > 0:
-        final_hrv = (0.80 * previous_hrv) + (0.20 * adjusted_rmssd)
+        final_hrv = (0.90 * previous_hrv) + (0.10 * adjusted_rmssd)
     else:
         final_hrv = adjusted_rmssd
         
