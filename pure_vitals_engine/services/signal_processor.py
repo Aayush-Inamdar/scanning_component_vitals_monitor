@@ -1,7 +1,7 @@
 import numpy as np
 from config.settings import TARGET_FPS, HR_WINDOW_SEC, EXTENDED_WINDOW_SEC
 from services.pos_engine import extract_pos_signal
-from services.metrics.heart_rate import calculate_hr
+from services.metrics.heart_rate import calculate_live_hr
 from services.metrics.hrv import calculate_hrv
 from services.metrics.breathing import calculate_breathing
 
@@ -27,7 +27,7 @@ class PosSignalProcessor:
                 g_raw[-fast_frames:], b_raw[-fast_frames:], self.fps
             )
             
-            hr, _, self.lost_lock_counter, _ = calculate_hr(
+            hr, _, self.lost_lock_counter, _ = calculate_live_hr(
                 pos_10s, self.fps, self.last_known_hr, self.lost_lock_counter, self.anchor_hr
             )
             
@@ -36,15 +36,14 @@ class PosSignalProcessor:
                 if self.anchor_hr is None:
                     self.anchor_candidates.append(hr)
                     # Require 3 consecutive stable readings to prove it is a biological pulse
-                    if len(self.anchor_candidates) >= 3:
-                        recent = self.anchor_candidates[-3:]
-                        if np.max(recent) - np.min(recent) <= 2.5: # Must be stable within 2.5 BPM
+                    if len(self.anchor_candidates) >= 5:
+                        recent = self.anchor_candidates[-5:]
+                        if np.max(recent) - np.min(recent) <= 4.0: # Must be stable within 2.5 BPM
                             self.anchor_hr = np.mean(recent)
                             print(f"[ENGINE] Baseline Verified. Absolute Anchor Locked at: {self.anchor_hr:.1f} BPM")
                         else:
                             # Too much variance, pop the oldest and keep waiting
                             self.anchor_candidates.pop(0)
-                
                 self.last_known_hr = hr 
                 results['hr'] = round(hr, 1)
 
@@ -52,7 +51,7 @@ class PosSignalProcessor:
         if total_time >= EXTENDED_WINDOW_SEC * 0.95: 
             pos_30s = extract_pos_signal(t_raw, r_raw, g_raw, b_raw, self.fps)
             
-            hr_30s, clean_pulse_30s, _, _ = calculate_hr(
+            hr_30s, clean_pulse_30s, _, _ = calculate_live_hr(
                 pos_30s, self.fps, self.last_known_hr, self.lost_lock_counter, self.anchor_hr
             )
             

@@ -1,54 +1,88 @@
 import numpy as np
 from scipy import signal
 
-HR_MIN_HZ = 0.75  # 45 BPM
-HR_MAX_HZ = 2.5   # 150 BPM
-
-# Stores the history of peaks to ensure stability
-peak_history = [] 
-
-def calculate_hr(pos_signal, fps, previous_hr_bpm=None, lost_lock_counter=0, anchor_hr_bpm=None):
-    global peak_history
-    pos_detrended = signal.detrend(pos_signal)
-    
-    b_filt, a_filt = signal.butter(3, [HR_MIN_HZ, HR_MAX_HZ], btype='bandpass', fs=fps)
-    clean_pulse = signal.filtfilt(b_filt, a_filt, pos_detrended)
-    
-    current_len = len(clean_pulse)
-    safe_nfft = 16384 
-    freqs, psd = signal.welch(clean_pulse, fs=fps, nperseg=current_len, nfft=safe_nfft)
-
-    valid_mask = (freqs >= HR_MIN_HZ) & (freqs <= HR_MAX_HZ)
-    valid_freqs = freqs[valid_mask]
-    valid_psd = psd[valid_mask]
-    
-    peaks, properties = signal.find_peaks(valid_psd, prominence=np.max(valid_psd) * 0.15)
-    
-    if len(peaks) == 0:
-        return previous_hr_bpm, clean_pulse, lost_lock_counter + 1, {"bpm": [], "power": []}
-
-    candidates = valid_freqs[peaks] * 60.0
-    prominences = properties['prominences']
-
-    # --- THE PERSISTENCE LOGIC ---
-    # We find the best peak, but we weight it against the previous second's peak.
-    best_candidate = candidates[np.argmax(prominences)]
-    peak_history.append(best_candidate)
-    if len(peak_history) > 5: peak_history.pop(0)
-    
-    # Calculate a "Weighted Stability" HR
-    stable_hr = np.median(peak_history)
+def calculate_live_hr(pos_signal, fps, last_known_hr, lost_lock_counter, anchor_hr):
+    """
+    Live Frequency-Domain Heart Rate Extraction.
+    Receives a 1D optical signal (pos_10s) and outputs 4 variables to match signal_processor.
+    """
+    if len(pos_signal) < int(fps * 2):
+        return None, None, lost_lock_counter, None
 
     # ---------------------------------------------------------
-    # ABSOLUTE ANCHOR LOGIC
+    # 1. LIVE DSP PIPELINE 
     # ---------------------------------------------------------
-    if anchor_hr_bpm is None:
-        if 55.0 <= stable_hr <= 105.0 and not (59.0 < stable_hr < 61.0):
-            return stable_hr, clean_pulse, 0, {"bpm": (valid_freqs * 60.0).tolist(), "power": valid_psd.tolist()}
-        return previous_hr_bpm, clean_pulse, lost_lock_counter + 1, {}
-
-    # Tethering to the anchor
-    if abs(stable_hr - anchor_hr_bpm) <= 5.0: # Wider tether for search, tighter for output
-        return stable_hr, clean_pulse, 0, {}
+    # Base Detrend
+    clean_pulse = signal.detrend(pos_signal)
     
-    return previous_hr_bpm, clean_pulse, lost_lock_counter + 1, {}
+    # Order 3, 0.75-2.5 Hz Bandpass (No Savitzky-Golay, No Hilbert)
+    b_filt, a_filt = signal.butter(3, [0.75, 2.5], btype='bandpass', fs=fps)
+    clean_pulse = signal.filtfilt(b_filt, a_filt, clean_pulse)
+    
+    # Uniform Z-Score Normalization
+    clean_pulse = (clean_pulse - np.mean(clean_pulse)) / (np.std(clean_pulse) + 1e-8)
+    
+    # ---------------------------------------------------------
+    # 2. WELCH'S POWER SPECTRAL DENSITY (FFT)
+    # ---------------------------------------------------------
+    nperseg = min(len(clean_pulse), int(fps * 10)) 
+    
+    f, pxx = signal.welch(clean_pulse, fs=fps, nperseg=nperseg, nfft=16384, scaling='spectrum')
+    bpm_freqs = f * 60.0
+    
+    # ---------------------------------------------------------
+    # 3. THE 1 HZ ALIAS BLINDSPOT 
+    # ---------------------------------------------------------
+    valid_idx = np.where(
+        (bpm_freqs >= 45.0) & (bpm_freqs <= 150.0) & 
+        ~((bpm_freqs >= 59.0) & (bpm_freqs <= 61.0))
+    )[0]
+    
+    if len(valid_idx) == 0:
+        return None, None, lost_lock_counter + 1, None
+        
+    valid_f = bpm_freqs[valid_idx]
+    valid_p = pxx[valid_idx]
+    
+    max_idx = np.argmax(valid_p)
+    raw_peak_bpm = valid_f[max_idx]
+
+    if raw_peak_bpm < 65.0:
+        double_target = raw_peak_bpm * 2.0
+        double_idx = np.argmin(np.abs(valid_f - double_target))
+        
+        # If the upper frequency has at least 35% of the sub-harmonic's power, it's the real HR
+        if valid_p[double_idx] > (0.35 * valid_p[max_idx]):
+            max_idx = double_idx
+            raw_peak_bpm = valid_f[max_idx]
+    
+    # ---------------------------------------------------------
+    # 4. PARABOLIC PEAK INTERPOLATION
+    # ---------------------------------------------------------
+    if 0 < max_idx < len(valid_p) - 1:
+        alpha = valid_p[max_idx - 1]
+        beta = valid_p[max_idx]
+        gamma = valid_p[max_idx + 1]
+        
+        denominator = (alpha - 2 * beta + gamma)
+        if denominator != 0:
+            shift = 0.5 * (alpha - gamma) / denominator
+            bin_width = valid_f[1] - valid_f[0]
+            true_peak_bpm = raw_peak_bpm + (shift * bin_width)
+        else:
+            true_peak_bpm = raw_peak_bpm
+    else:
+        true_peak_bpm = raw_peak_bpm
+        
+    # ---------------------------------------------------------
+    # 5. LIVE VAULT CLAMP (Prevents harmonic drift in the FFT)
+    # ---------------------------------------------------------
+    if anchor_hr is not None:
+        if abs(true_peak_bpm - anchor_hr) > 10.0:
+            # If the FFT jumps to a wild harmonic, reject it and return the last safe reading
+            return last_known_hr, None, lost_lock_counter + 1, None
+            
+    if 40.0 <= true_peak_bpm <= 150.0:
+        return float(true_peak_bpm), None, 0, None
+    else:
+        return None, None, lost_lock_counter + 1, None

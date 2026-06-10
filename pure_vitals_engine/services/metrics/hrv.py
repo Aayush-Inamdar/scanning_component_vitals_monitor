@@ -1,58 +1,62 @@
 import numpy as np
 from scipy import signal
 
-def calculate_hrv(clean_pulse, fps, current_hr_bpm=None, previous_hrv=None):
-    """Calculates RMSSD strictly using the Tachogram RR-interval extraction logic."""
-    if len(clean_pulse) == 0:
-        return previous_hrv
-
-    # --- FIX: Pre-Z-Score Outlier Clipping ---
-    # Decapitates massive motion artifacts before they can inflate the standard
-    # deviation and squash the true biological peaks.
-    m_pulse = np.mean(clean_pulse)
-    s_pulse = np.std(clean_pulse)
-    clipped_pulse = np.clip(clean_pulse, m_pulse - 3.0 * s_pulse, m_pulse + 3.0 * s_pulse)
+def calculate_hrv_rmssd(input_dict):
+    """
+    Python equivalent of the TS/JS calculateHRVRMSSDValue function.
+    Calculates RMSSD from an array of RR intervals (in milliseconds).
+    """
+    heartbeats = input_dict.get('correctedHeartbeats', input_dict.get('heartbeats', []))
     
-    # 2. Normalize to standard Z-Score
-    norm_pulse = (clipped_pulse - np.mean(clipped_pulse)) / (np.std(clipped_pulse) + 1e-8)
+    if not isinstance(heartbeats, (list, np.ndarray)) or len(heartbeats) < 2:
+        return {'calculatedHrvRmssdMs': 0.0}
+        
+    rr_intervals = np.array([float(x) for x in heartbeats if np.isfinite(float(x))])
+    
+    if len(rr_intervals) < 2:
+        return {'calculatedHrvRmssdMs': 0.0}
+        
+    diffs = np.diff(rr_intervals)
+    sum_of_squared_differences = np.sum(np.square(diffs))
+    calculated_hrv_rmssd_ms = np.sqrt(sum_of_squared_differences / len(diffs))
+    
+    input_dict['calculatedHrvRmssdMs'] = calculated_hrv_rmssd_ms
+    
+    return {'calculatedHrvRmssdMs': calculated_hrv_rmssd_ms}
 
-    # 3. Peak Extraction with a rock-solid normalized prominence
+def get_rmssd_from_array(clean_rr_intervals_array):
+    """Convenience wrapper to feed our engine's NumPy arrays directly into the JS structure."""
+    mock_input_object = {'heartbeats': clean_rr_intervals_array}
+    result = calculate_hrv_rmssd(mock_input_object)
+    return result['calculatedHrvRmssdMs']
+
+def calculate_hrv(clean_pulse, fps, current_hr, last_known_hrv=None):
+    """
+    Restored bridge function for live UI processing. 
+    Extracts RR intervals from the live pulse wave and routes them through the new JS-translated RMSSD calculator.
+    """
+    if current_hr is None or current_hr < 40:
+        return last_known_hrv
+    
+    clean_pulse = np.ravel(clean_pulse)
+        
+    # Extract peaks from the live rolling window
     min_dist_frames = int(fps * (60.0 / 150.0))
-    # A prominence of 0.60 is clinically safe for Z-scored data
-    prominence_val = 0.60 
-
-    peaks, _ = signal.find_peaks(
-        norm_pulse, 
-        distance=min_dist_frames, 
-        prominence=prominence_val
-    )
+    peaks, _ = signal.find_peaks(clean_pulse, distance=min_dist_frames, prominence=0.25)
     
-    if len(peaks) < 4: 
-        return previous_hrv 
-    
-    # 4. Raw RR Intervals (ms)
+    if len(peaks) < 3:
+        return last_known_hrv
+        
+    # Convert peaks to RR intervals
     raw_rr_intervals = np.diff(peaks) * (1000.0 / fps)
     
-    # 5. Dynamic Artifact Filter
+    # Filter out wild variations
     median_rr = np.median(raw_rr_intervals)
     valid_mask = (raw_rr_intervals >= median_rr * 0.75) & (raw_rr_intervals <= median_rr * 1.25)
     clean_rr_intervals = raw_rr_intervals[valid_mask]
     
-    if len(clean_rr_intervals) < 3:
-        return previous_hrv
-
-    # 6. Clinical RMSSD Calculation
-    successive_diffs = np.diff(clean_rr_intervals)
-    raw_rmssd = np.sqrt(np.mean(np.square(successive_diffs)))
-    
-    adjusted_rmssd = max(5.0, raw_rmssd - 15.0)
-    
-    if adjusted_rmssd > 150:
-        return previous_hrv
+    if len(clean_rr_intervals) < 2:
+        return last_known_hrv
         
-    if previous_hrv is not None and previous_hrv > 0:
-        final_hrv = (0.90 * previous_hrv) + (0.10 * adjusted_rmssd)
-    else:
-        final_hrv = adjusted_rmssd
-        
-    return final_hrv
+    # Return the result from the new clinical math function
+    return get_rmssd_from_array(clean_rr_intervals)
