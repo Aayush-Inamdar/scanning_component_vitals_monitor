@@ -342,6 +342,65 @@ def run_pos_tracker(ipc):
             plt.savefig(tacho_save_path, bbox_inches='tight', facecolor='white', dpi=300)
             plt.close(fig_tacho)
             print(f"  -> Saved {tacho_save_path}")
+    
+    # ------------------------------------------------------------------
+    # JSON EXPORT
+    # ------------------------------------------------------------------
+    import json, base64
+
+    def png_to_b64(path):
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                return base64.b64encode(f.read()).decode('utf-8')
+        return None
+
+    hrv_rmssd_val = round(float(get_rmssd_from_array(clean_rr_intervals)), 1) if len(clean_rr_intervals) > 1 else None
+
+    try:
+        br_peaks, _ = signal.find_peaks(envelope_smooth_bcg, distance=int(TARGET_FPS * (60.0 / 30.0)))
+        calc_br_val = round(float(60.0 / np.median(np.diff(br_peaks) / TARGET_FPS)), 1) if len(br_peaks) >= 2 else None
+    except Exception:
+        calc_br_val = None
+
+    session_json = {
+        "timestamp": timestamp,
+        "duration_sec": round(total_time, 1),
+        "ml": {
+            "sqi": round(final_sqi, 3),
+            "status": "LOCKED" if ml_succeeded else "FALLBACK",
+            "anchor_bpm": round(final_anchor, 1) if ml_succeeded else None
+        },
+        "metrics": {
+            "heart_rate_bpm": round(final_graph_hr, 1) if final_graph_hr else None,
+            "hrv_rmssd_ms": hrv_rmssd_val,
+            "breathing_rate_bpm": calc_br_val
+        },
+        "graphs": {
+            "raw_rgb": {
+            "time": t_axis.tolist(),
+            "red":  r_arr.tolist(),
+            "green": g_arr.tolist(),
+            "blue": b_arr.tolist()
+        },
+        "bvp": {
+            "time": bvp_t_axis.tolist(),
+            "amplitude": clean_pulse.tolist()
+        },
+        "bcg": {
+            "time": t_axis.tolist(),
+            "displacement": clean_bcg.tolist()
+        },
+        "tachogram": {
+            "beat_number": beat_numbers.tolist(),
+            "rr_interval_ms": clean_rr_intervals.tolist()
+        } if len(clean_rr_intervals) > 0 else None
+            }
+    }
+
+    json_save_path = f"data/session_{timestamp}.json"
+    with open(json_save_path, 'w') as f:
+        json.dump(session_json, f, indent=2)
+    print(f"  -> Saved {json_save_path}")
 
     # ------------------------------------------------------------------
     # TERMINAL SUMMARY
